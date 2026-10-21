@@ -39,6 +39,8 @@ const MemberSchema = new mongoose.Schema(
     dueAmount: { type: Number, default: 0 },
     photoUrl: { type: String, default: '' },
     notes: { type: String, default: '' },
+    frozenAt: { type: Date, default: null },
+    freezeReason: { type: String, default: '' },
   },
   { timestamps: true }
 );

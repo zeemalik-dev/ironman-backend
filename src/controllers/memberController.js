@@ -3,6 +3,8 @@ import { Member } from '../models/Member.js';
 import { Payment } from '../models/Payment.js';
 import { Plan } from '../models/Plan.js';
 import { Trainer } from '../models/Trainer.js';
+import { Attendance } from '../models/Attendance.js';
+import { CashClosing } from '../models/CashClosing.js';
 
 export const getMembers = async (req, res) => {
   try {
@@ -74,8 +76,37 @@ export const getMemberById = async (req, res) => {
     if (!member) {
       return res.status(404).json({ success: false, message: 'Member not found' });
     }
-    const payments = await Payment.find({ memberId: member.memberId, gymId: req.gymId }).sort({ paidOn: -1 });
-    res.json({ success: true, member, payments });
+    const [payments, attendance] = await Promise.all([
+      Payment.find({
+        gymId: req.gymId,
+        $or: [{ memberId: member.memberId }, { memberId: String(member._id) }],
+      }).sort({ paidOn: -1 }),
+      Attendance.find({
+        gymId: req.gymId,
+        $or: [{ member: member._id }, { memberId: member.memberId }],
+      }).sort({ checkInTime: -1 }).limit(100),
+    ]);
+
+    const now = new Date();
+    const expiry = new Date(member.expiryDate);
+    const diffMs = expiry.getTime() - now.getTime();
+    const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    const isRenewEligible = daysRemaining <= 10;
+    const daysFrozen = member.frozenAt
+      ? Math.max(0, Math.ceil((now.getTime() - new Date(member.frozenAt).getTime()) / (1000 * 60 * 60 * 24)))
+      : 0;
+
+    res.json({
+      success: true,
+      member: {
+        ...member.toObject(),
+        daysRemaining,
+        isRenewEligible,
+        daysFrozen,
+      },
+      payments,
+      attendance,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -466,11 +497,284 @@ export const renewMembership = async (req, res) => {
 
 export const deleteMember = async (req, res) => {
   try {
-    const member = await Member.findOneAndDelete({ _id: req.params.id, gymId: req.gymId });
+    const gymId = req.gymId;
+    const member = await Member.findOne({ _id: req.params.id, gymId });
     if (!member) {
       return res.status(404).json({ success: false, message: 'Member not found' });
     }
-    res.json({ success: true, message: 'Member removed successfully' });
+
+    // 1. Find all payments for this member to identify affected cashflow dates
+    const memberPayments = await Payment.find({
+      gymId,
+      $or: [
+        { memberId: member.memberId },
+        { memberId: String(member._id) },
+      ],
+    });
+
+    const affectedDates = new Set();
+    memberPayments.forEach((p) => {
+      if (p.paidOn) {
+        try {
+          const dStr = new Date(p.paidOn).toISOString().split('T')[0];
+          affectedDates.add(dStr);
+        } catch (_) {}
+      }
+    });
+
+    // 2. Cascade delete all payment transactions (Cashflow, Invoices, Fees)
+    const paymentDeleteResult = await Payment.deleteMany({
+      gymId,
+      $or: [
+        { memberId: member.memberId },
+        { memberId: String(member._id) },
+      ],
+    });
+
+    // 3. Cascade delete all attendance records (Check-in history)
+    const attendanceDeleteResult = await Attendance.deleteMany({
+      gymId,
+      $or: [
+        { member: member._id },
+        { memberId: member.memberId },
+      ],
+    });
+
+    // 4. Synchronize any existing CashClosing records for affected dates so cash drawer reports remain consistent
+    const gymObjectId = mongoose.Types.ObjectId.isValid(gymId)
+      ? new mongoose.Types.ObjectId(gymId)
+      : gymId;
+
+    for (const dateStr of affectedDates) {
+      const existingClosing = await CashClosing.findOne({ gymId, dateStr });
+      if (existingClosing) {
+        const parts = dateStr.split('-');
+        const year = parseInt(parts[0], 10);
+        const month = parseInt(parts[1], 10) - 1;
+        const day = parseInt(parts[2], 10);
+        const dayStart = new Date(year, month, day, 0, 0, 0, 0);
+        const dayEnd = new Date(year, month, day, 23, 59, 59, 999);
+
+        const remainingCashIncomeAgg = await Payment.aggregate([
+          {
+            $match: {
+              gymId: gymObjectId,
+              method: 'cash',
+              paidOn: { $gte: dayStart, $lte: dayEnd },
+            },
+          },
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]);
+
+        const newCashIncome = remainingCashIncomeAgg[0]?.total || 0;
+        const newExpectedCash = (existingClosing.openingCash || 0) + newCashIncome - (existingClosing.cashExpenses || 0);
+        const newDifference = (existingClosing.countedCash || 0) - newExpectedCash;
+        const newStatus = newDifference === 0 ? 'balanced' : newDifference < 0 ? 'short' : 'excess';
+
+        existingClosing.cashIncome = newCashIncome;
+        existingClosing.expectedCash = newExpectedCash;
+        existingClosing.difference = newDifference;
+        existingClosing.status = newStatus;
+        await existingClosing.save();
+      }
+    }
+
+    // 5. Delete the member record
+    await Member.deleteOne({ _id: member._id, gymId });
+
+    res.json({
+      success: true,
+      message: `Member "${member.name}" and all associated details (cashflow, payments, attendance) removed successfully`,
+      deletedSummary: {
+        memberId: member.memberId,
+        name: member.name,
+        paymentsDeleted: paymentDeleteResult.deletedCount || 0,
+        attendanceDeleted: attendanceDeleteResult.deletedCount || 0,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const freezeMember = async (req, res) => {
+  try {
+    const gymId = req.gymId;
+    const { id } = req.params;
+    const { reason = '' } = req.body;
+
+    const member = await Member.findOne({ _id: id, gymId });
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+
+    if (member.status === 'frozen') {
+      return res.status(400).json({ success: false, message: 'Member is already frozen' });
+    }
+
+    member.status = 'frozen';
+    member.frozenAt = new Date();
+    if (reason) member.freezeReason = String(reason).trim();
+    await member.save();
+
+    res.json({
+      success: true,
+      message: `Membership for "${member.name}" has been frozen successfully`,
+      member,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const unfreezeMember = async (req, res) => {
+  try {
+    const gymId = req.gymId;
+    const { id } = req.params;
+
+    const member = await Member.findOne({ _id: id, gymId });
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+
+    if (member.status !== 'frozen') {
+      return res.status(400).json({ success: false, message: 'Member is not currently frozen' });
+    }
+
+    // Extend expiry date by the duration the membership was frozen so paid time is not lost
+    const now = new Date();
+    if (member.frozenAt) {
+      const frozenMs = now.getTime() - new Date(member.frozenAt).getTime();
+      if (frozenMs > 0) {
+        member.expiryDate = new Date(new Date(member.expiryDate).getTime() + frozenMs);
+      }
+    }
+
+    // Determine restored status
+    if (new Date(member.expiryDate) < now) {
+      member.status = 'expired';
+    } else if (Number(member.dueAmount) > 0) {
+      member.status = 'due';
+    } else {
+      member.status = 'active';
+    }
+
+    member.frozenAt = null;
+    member.freezeReason = '';
+    await member.save();
+
+    res.json({
+      success: true,
+      message: `Membership for "${member.name}" has been unfrozen and restored to ${member.status} status`,
+      member,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const bookTrainer = async (req, res) => {
+  try {
+    const gymId = req.gymId;
+    const { id } = req.params;
+    const { trainerId, paidAmount = 0, paymentMethod = 'cash', paymentMode = 'full', notes = '' } = req.body;
+
+    if (!trainerId) {
+      return res.status(400).json({ success: false, message: 'Please select a trainer to book' });
+    }
+
+    const [member, trainer] = await Promise.all([
+      Member.findOne({ _id: id, gymId }),
+      Trainer.findOne({ _id: trainerId, gymId }),
+    ]);
+
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+    if (!trainer) {
+      return res.status(404).json({ success: false, message: 'Trainer not found' });
+    }
+
+    const trainerFee = Number(trainer.fee !== undefined ? trainer.fee : 3000);
+    const numPaid = Math.max(0, Number(paidAmount) || 0);
+
+    if (numPaid > trainerFee) {
+      return res.status(400).json({
+        success: false,
+        message: `Paid amount cannot exceed trainer fee (${trainerFee})`,
+      });
+    }
+
+    // Update member coaching fields
+    member.withTrainer = true;
+    member.trainerId = trainer._id;
+    member.trainerName = trainer.name;
+    member.trainerFee = trainerFee;
+
+    // Financial adjustment: add trainer fee to total amount and update paid/due amounts
+    member.totalAmount = (Number(member.totalAmount) || 0) + trainerFee;
+    member.paidAmount = (Number(member.paidAmount) || 0) + numPaid;
+    const dueAddition = Math.max(0, trainerFee - numPaid);
+    member.dueAmount = (Number(member.dueAmount) || 0) + dueAddition;
+
+    await member.save();
+
+    // Create payment transaction if money was collected now
+    let payment = null;
+    if (numPaid > 0) {
+      const now = new Date();
+      payment = await Payment.create({
+        gymId,
+        memberId: member.memberId,
+        memberName: member.name,
+        amount: numPaid,
+        method: paymentMethod || 'cash',
+        paymentType: 'pt_fee',
+        plan: member.plan,
+        invoiceNo: `INV-PT-${Date.now().toString().slice(-6)}`,
+        receivedBy: req.user?.name || 'Admin',
+        paidOn: now,
+        notes: notes || `Personal Trainer booking: Coach ${trainer.name} (+PKR ${trainerFee})`,
+        trainerFee: trainerFee,
+        trainerName: trainer.name,
+        finalFee: trainerFee,
+        dueRemaining: dueAddition,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Coach "${trainer.name}" successfully booked for ${member.name}!`,
+      member,
+      payment,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const removeTrainer = async (req, res) => {
+  try {
+    const gymId = req.gymId;
+    const { id } = req.params;
+
+    const member = await Member.findOne({ _id: id, gymId });
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+
+    const previousTrainer = member.trainerName;
+    member.withTrainer = false;
+    member.trainerId = null;
+    member.trainerName = '';
+    member.trainerFee = 0;
+    await member.save();
+
+    res.json({
+      success: true,
+      message: `Personal trainer ${previousTrainer ? `"${previousTrainer}" ` : ''}unassigned from ${member.name}.`,
+      member,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
