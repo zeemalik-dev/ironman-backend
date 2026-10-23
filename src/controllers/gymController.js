@@ -54,6 +54,22 @@ export const createGym = async (req, res) => {
       ownerPassword,
     } = req.body;
 
+    const normalizedOwnerEmail = ownerEmail ? ownerEmail.toLowerCase().trim() : null;
+    if (normalizedOwnerEmail) {
+      const existingUser = await User.findOne({ email: normalizedOwnerEmail });
+      if (existingUser) {
+        const gymExists = existingUser.gymId ? await Gym.findById(existingUser.gymId) : null;
+        if (gymExists) {
+          return res.status(400).json({
+            success: false,
+            message: `A user with email ${normalizedOwnerEmail} is already assigned to active gym "${gymExists.name}".`,
+          });
+        }
+        // Orphaned user from a previously deleted gym - clean it up
+        await User.deleteOne({ _id: existingUser._id });
+      }
+    }
+
     const existingGym = await Gym.findOne({ $or: [{ slug }, { branchCode }] });
     if (existingGym) {
       return res.status(400).json({ success: false, message: 'Gym slug or Branch code already in use' });
@@ -73,10 +89,10 @@ export const createGym = async (req, res) => {
     });
 
     let ownerUser = null;
-    if (ownerEmail && ownerPassword) {
+    if (normalizedOwnerEmail && ownerPassword) {
       ownerUser = await User.create({
         name: ownerName || `${name} Owner`,
-        email: ownerEmail.toLowerCase().trim(),
+        email: normalizedOwnerEmail,
         password: ownerPassword,
         role: 'owner',
         gymId: gym._id,
@@ -119,9 +135,19 @@ export const deleteGym = async (req, res) => {
     if (!gym) {
       return res.status(404).json({ success: false, message: 'Gym not found' });
     }
-    // Deactivate associated users
-    await User.updateMany({ gymId: gym._id }, { isActive: false });
+    // Delete associated users so emails can be cleanly re-used
+    await User.deleteMany({ gymId: gym._id });
     res.json({ success: true, message: 'Gym deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteUserByEmail = async (req, res) => {
+  try {
+    const { email } = req.params;
+    const result = await User.deleteMany({ email: email.toLowerCase().trim() });
+    res.json({ success: true, message: `Deleted ${result.deletedCount} user(s) matching ${email}` });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
