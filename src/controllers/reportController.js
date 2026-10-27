@@ -1093,7 +1093,7 @@ export const getDashboardStats = async (req, res) => {
         { $match: { gymId: gymObjectId, dueAmount: { $gt: 0 } } },
         { $group: { _id: null, totalDues: { $sum: '$dueAmount' } } },
       ]),
-      Attendance.find({ gymId }).sort({ checkInTime: -1 }).limit(10),
+      Attendance.find({ gymId, dateStr: todayStr }).sort({ checkInTime: -1 }).limit(20),
       Member.find({ gymId, expiryDate: { $gte: now, $lte: sevenDaysLater } }).limit(5),
     ]);
 

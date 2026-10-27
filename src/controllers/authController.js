@@ -106,3 +106,29 @@ export const logout = async (req, res) => {
 
   res.json({ success: true, message: 'Logged out successfully' });
 };
+
+export const verifyPassword = async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ success: false, message: 'Admin password is required' });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid admin password. Action verification failed.',
+      });
+    }
+
+    res.json({ success: true, message: 'Password verified successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

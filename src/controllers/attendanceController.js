@@ -3,10 +3,26 @@ import { Member } from '../models/Member.js';
 import { Gym } from '../models/Gym.js';
 
 /**
- * Returns YYYY-MM-DD string for a date in the given timezone (default Asia/Karachi).
+ * Returns YYYY-MM-DD string for a date in the given timezone (default Asia/Karachi),
+ * respecting gym checkInCutoffHour and checkInCutoffMinute (e.g. if cutoff is 04:00 AM,
+ * any time between 04:00 AM Today and 03:59 AM Tomorrow counts as "Today").
  */
-export const getGymDateString = (date = new Date(), timezone = 'Asia/Karachi') => {
-  const d = date instanceof Date ? date : new Date(date);
+export const getGymDateString = (
+  date = new Date(),
+  timezone = 'Asia/Karachi',
+  cutoffHour = 0,
+  cutoffMinute = 0
+) => {
+  const d = date instanceof Date ? new Date(date) : new Date(date);
+
+  // If cutoff is not midnight (00:00), subtract cutoff offset from current time
+  // so that the 24h operational cycle shifts seamlessly.
+  // Example: if cutoff is 04:00 AM, at 02:00 AM on Oct 27, (02:00 - 4h) = 10:00 PM on Oct 26.
+  if (cutoffHour > 0 || cutoffMinute > 0) {
+    const offsetMs = (cutoffHour * 60 + cutoffMinute) * 60 * 1000;
+    d.setTime(d.getTime() - offsetMs);
+  }
+
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
     year: 'numeric',
@@ -76,16 +92,37 @@ export const checkIn = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Member not found in database' });
     }
 
-    const gym = await Gym.findById(gymId).select('timezone');
+    const gym = await Gym.findById(gymId).select('timezone settings');
     const timezone = gym?.timezone || 'Asia/Karachi';
-    const todayStr = getGymDateString(new Date(), timezone);
+    const cutoffHour = gym?.settings?.checkInCutoffHour ?? 0;
+    const cutoffMinute = gym?.settings?.checkInCutoffMinute ?? 0;
+    const todayStr = getGymDateString(new Date(), timezone, cutoffHour, cutoffMinute);
 
-    // Check if member already checked in within last 3 hours
+    // Check if member already checked in today
     const recentCheckIn = await Attendance.findOne({
       gymId,
       member: member._id,
       dateStr: todayStr,
     }).sort({ checkInTime: -1 });
+
+    if (recentCheckIn) {
+      return res.status(400).json({
+        success: false,
+        message: `${member.name} (${member.memberId}) is already checked in today.`,
+        alreadyCheckedIn: true,
+        attendance: recentCheckIn,
+        member: {
+          id: member._id,
+          memberId: member.memberId,
+          name: member.name,
+          status: member.status,
+          plan: member.plan,
+          dueAmount: member.dueAmount,
+          expiryDate: member.expiryDate,
+          photoUrl: member.photoUrl,
+        },
+      });
+    }
 
     const attendance = await Attendance.create({
       gymId,
@@ -128,11 +165,13 @@ export const checkIn = async (req, res) => {
 export const getAttendanceLogs = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const gym = await Gym.findById(gymId).select('timezone');
+    const gym = await Gym.findById(gymId).select('timezone settings');
     const timezone = gym?.timezone || 'Asia/Karachi';
+    const cutoffHour = gym?.settings?.checkInCutoffHour ?? 0;
+    const cutoffMinute = gym?.settings?.checkInCutoffMinute ?? 0;
 
     const { date, limit = 50 } = req.query;
-    const dateStr = date || getGymDateString(new Date(), timezone);
+    const dateStr = date || getGymDateString(new Date(), timezone, cutoffHour, cutoffMinute);
 
     const logs = await Attendance.find({ gymId, dateStr })
       .sort({ checkInTime: -1 });
@@ -177,8 +216,10 @@ export const getAttendanceLogs = async (req, res) => {
 export const getAttendanceHistory = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const gym = await Gym.findById(gymId).select('timezone name');
+    const gym = await Gym.findById(gymId).select('timezone settings name');
     const timezone = gym?.timezone || 'Asia/Karachi';
+    const cutoffHour = gym?.settings?.checkInCutoffHour ?? 0;
+    const cutoffMinute = gym?.settings?.checkInCutoffMinute ?? 0;
 
     const {
       filter = 'today',
@@ -192,7 +233,7 @@ export const getAttendanceHistory = async (req, res) => {
     } = req.query;
 
     const activeFilter = (preset || filter || 'today').toLowerCase();
-    const todayStr = getGymDateString(new Date(), timezone);
+    const todayStr = getGymDateString(new Date(), timezone, cutoffHour, cutoffMinute);
 
     let rangeStartDate = todayStr;
     let rangeEndDate = todayStr;

@@ -64,6 +64,10 @@ const GymSchema = new mongoose.Schema(
         default: 'en',
       },
       enablePaymentDueReminders: { type: Boolean, default: true },
+      checkInCutoffHour: { type: Number, default: 0, min: 0, max: 23 }, // Hour of day when new checkin day starts (0-23, e.g. 4 for 4:00 AM)
+      checkInCutoffMinute: { type: Number, default: 0, min: 0, max: 59 },
+      openingTime: { type: String, default: '06:00' },
+      closingTime: { type: String, default: '23:00' },
     },
   },
   { timestamps: true }

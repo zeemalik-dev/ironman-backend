@@ -181,8 +181,11 @@ export const createMember = async (req, res) => {
       trainerFee = 0;
     }
 
-    // Calculated base fee is membership plan fee + trainer fee (when personal trainer is enabled)
-    let baseFee = planFee + trainerFee;
+    // 3. Admission Fee
+    const admissionFee = Math.max(0, Number(req.body.admissionFee) || 0);
+
+    // Calculated base fee is membership plan fee + trainer fee + admission fee
+    let baseFee = planFee + trainerFee + admissionFee;
 
     // Support custom pricing override if admin explicitly set custom original fee
     if (originalFee !== undefined && !isNaN(Number(originalFee))) {
@@ -301,6 +304,7 @@ export const createMember = async (req, res) => {
       startDate: now,
       expiryDate,
       status: dueAmount > 0 ? 'due' : 'active',
+      admissionFee: admissionFee,
       originalFee: baseFee,
       discountType: normDiscountType,
       discountValue: finalDiscountValue,
@@ -319,6 +323,9 @@ export const createMember = async (req, res) => {
       let paymentNotes = dueAmount > 0
         ? 'Initial admission fee payment (partial advance)'
         : 'Initial admission fee payment (full)';
+      if (admissionFee > 0) {
+        paymentNotes += ` [Admission Fee: PKR ${admissionFee}]`;
+      }
       if (isWithTrainer && assignedTrainer) {
         paymentNotes += ` [Personal Trainer: ${assignedTrainer.name} (+PKR ${trainerFee})]`;
       }
@@ -339,6 +346,7 @@ export const createMember = async (req, res) => {
         paidOn: now,
         notes: paymentNotes,
         planFee: planFee,
+        admissionFee: admissionFee,
         trainerFee: isWithTrainer ? trainerFee : 0,
         trainerName: isWithTrainer && assignedTrainer ? assignedTrainer.name : '',
         originalFee: baseFee,
@@ -364,9 +372,23 @@ export const createMember = async (req, res) => {
 
 export const updateMember = async (req, res) => {
   try {
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = {
+      gymId: req.gymId,
+      $or: [
+        ...(isObjectId ? [{ _id: req.params.id }] : []),
+        { memberId: req.params.id },
+      ],
+    };
+
+    const updateData = { ...req.body };
+    if (updateData.admissionFee !== undefined) {
+      updateData.admissionFee = Math.max(0, Number(updateData.admissionFee) || 0);
+    }
+
     const member = await Member.findOneAndUpdate(
-      { _id: req.params.id, gymId: req.gymId },
-      req.body,
+      query,
+      { $set: updateData },
       { new: true, runValidators: true }
     );
     if (!member) {
@@ -392,6 +414,8 @@ export const renewMembership = async (req, res) => {
       withTrainer,
       trainerId,
       notes,
+      paymentDate,
+      expiryDate,
     } = req.body;
 
     const member = await Member.findOne({ _id: req.params.id, gymId: req.gymId });
@@ -418,9 +442,17 @@ export const renewMembership = async (req, res) => {
       return res.status(400).json({ success: false, message: 'In Partial Payment mode, advance payment must be less than the renewal fee' });
     }
 
-    const currentExpiry = new Date(member.expiryDate);
-    const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
-    const newExpiry = new Date(baseDate.getTime() + Number(durationDays) * 24 * 60 * 60 * 1000);
+    let newExpiry;
+    if (expiryDate) {
+      newExpiry = new Date(expiryDate);
+    } else if (paymentDate) {
+      const baseDate = new Date(paymentDate);
+      newExpiry = new Date(baseDate.getTime() + Number(durationDays) * 24 * 60 * 60 * 1000);
+    } else {
+      const currentExpiry = new Date(member.expiryDate);
+      const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
+      newExpiry = new Date(baseDate.getTime() + Number(durationDays) * 24 * 60 * 60 * 1000);
+    }
 
     // Preserve previous outstanding dues and calculate new renewal due
     const previousDue = Number(member.dueAmount) || 0;
@@ -468,6 +500,7 @@ export const renewMembership = async (req, res) => {
       }
 
       const renTrainerFee = member.withTrainer ? (Number(member.trainerFee) || 0) : 0;
+      const paymentTimestamp = paymentDate ? new Date(paymentDate) : new Date();
       payment = await Payment.create({
         gymId: req.gymId,
         memberId: member.memberId,
@@ -478,7 +511,9 @@ export const renewMembership = async (req, res) => {
         plan: member.plan,
         invoiceNo: `INV-${Date.now().toString().slice(-6)}`,
         receivedBy: req.user?.name || 'Admin',
-        paidOn: new Date(),
+        paidOn: paymentTimestamp,
+        startDate: paymentTimestamp,
+        expiryDate: newExpiry,
         notes: paymentNotes,
         planFee: Math.max(0, fee - renTrainerFee),
         trainerFee: renTrainerFee,

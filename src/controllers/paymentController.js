@@ -7,7 +7,19 @@ import { Gym } from '../models/Gym.js';
 export const getPayments = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const { method, paymentType, search, limit = 50, page = 1 } = req.query;
+    const {
+      method,
+      paymentType,
+      search,
+      period,
+      startDate,
+      endDate,
+      date,
+      month,
+      year,
+      limit = 50,
+      page = 1,
+    } = req.query;
     const filter = { gymId };
 
     if (method && method !== 'all') filter.method = method;
@@ -18,6 +30,60 @@ export const getPayments = async (req, res) => {
         { memberId: { $regex: search, $options: 'i' } },
         { invoiceNo: { $regex: search, $options: 'i' } },
       ];
+    }
+
+    // Date range / Period filtering
+    if (period && period !== 'all') {
+      const now = new Date();
+      let start = null;
+      let end = null;
+
+      if (period === 'today' || period === 'daily') {
+        const d = date ? new Date(date) : now;
+        start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+        end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+      } else if (period === 'weekly') {
+        const d = date ? new Date(date) : now;
+        const endDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+        const startDay = new Date(endDay.getTime() - 6 * 24 * 60 * 60 * 1000);
+        startDay.setHours(0, 0, 0, 0);
+        start = startDay;
+        end = endDay;
+      } else if (period === 'monthly') {
+        const y = year ? Number(year) : now.getFullYear();
+        const m = month ? Number(month) - 1 : now.getMonth();
+        start = new Date(y, m, 1, 0, 0, 0, 0);
+        end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+      } else if (period === 'yearly') {
+        const y = year ? Number(year) : now.getFullYear();
+        start = new Date(y, 0, 1, 0, 0, 0, 0);
+        end = new Date(y, 11, 31, 23, 59, 59, 999);
+      } else if (period === 'custom' || startDate || endDate) {
+        if (startDate) {
+          const s = new Date(startDate);
+          start = new Date(s.getFullYear(), s.getMonth(), s.getDate(), 0, 0, 0, 0);
+        }
+        if (endDate) {
+          const e = new Date(endDate);
+          end = new Date(e.getFullYear(), e.getMonth(), e.getDate(), 23, 59, 59, 999);
+        }
+      }
+
+      if (start || end) {
+        filter.paidOn = {};
+        if (start) filter.paidOn.$gte = start;
+        if (end) filter.paidOn.$lte = end;
+      }
+    } else if (startDate || endDate) {
+      filter.paidOn = {};
+      if (startDate) {
+        const s = new Date(startDate);
+        filter.paidOn.$gte = new Date(s.getFullYear(), s.getMonth(), s.getDate(), 0, 0, 0, 0);
+      }
+      if (endDate) {
+        const e = new Date(endDate);
+        filter.paidOn.$lte = new Date(e.getFullYear(), e.getMonth(), e.getDate(), 23, 59, 59, 999);
+      }
     }
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -305,22 +371,47 @@ export const getPaymentInvoice = async (req, res) => {
       trainerName = member?.trainerName || '';
     }
 
-    // 2. Standalone Membership Plan Fee (always the actual plan fee itself, e.g. 5,000)
-    let planFee = 0;
-    if (isDueClearance) {
-      planFee = Number(payment.amount || 0);
-    } else if (payment.planFee !== undefined && payment.planFee > 0) {
-      planFee = Number(payment.planFee);
-    } else {
-      planFee = standardPlanPrice;
+    // 2. Standalone Membership Plan Fee & Admission Fee resolution
+    let admissionFee = payment.admissionFee !== undefined && Number(payment.admissionFee) > 0
+      ? Number(payment.admissionFee)
+      : (isAdmission ? Number(member?.admissionFee || 0) : 0);
+
+    if (admissionFee === 0 && payment.notes) {
+      const match = payment.notes.match(/(?:Admission Fee|admissionFee)[:\s]+(?:PKR\s*)?(\d+)/i);
+      if (match && match[1]) {
+        admissionFee = Number(match[1]) || 0;
+      }
     }
 
-    // 3. Gross total for THIS transaction before discount
+    let rawPlanFee = payment.planFee !== undefined && Number(payment.planFee) > 0
+      ? Number(payment.planFee)
+      : (isDueClearance ? Number(payment.amount || 0) : standardPlanPrice);
+
+    if (isAdmission && admissionFee === 0) {
+      // If payment combined admission fee into planFee (e.g. 10000 total for 5000 plan)
+      if (rawPlanFee > standardPlanPrice) {
+        admissionFee = rawPlanFee - standardPlanPrice;
+        rawPlanFee = standardPlanPrice;
+      } else if (payment.notes && /admission/i.test(payment.notes)) {
+        // Half split fallback if note indicates admission fee included
+        if (Number(payment.amount || 0) >= 10000) {
+          admissionFee = 5000;
+          rawPlanFee = Math.max(0, Number(payment.amount || 0) - 5000 - trainerFee);
+        }
+      }
+    } else if (admissionFee > 0 && rawPlanFee > admissionFee && (rawPlanFee + admissionFee > Number(payment.amount || 0) + Number(payment.dueRemaining || 0))) {
+      // If rawPlanFee already had admission fee inside it
+      rawPlanFee = rawPlanFee - admissionFee;
+    }
+
+    const planFee = isDueClearance ? Number(payment.amount || 0) : rawPlanFee;
+
+    // 4. Gross total for THIS transaction before discount
     const grossTotal = isDueClearance
       ? planFee
-      : (planFee + trainerFee);
+      : (planFee + trainerFee + admissionFee);
 
-    // 4. Discounts for THIS transaction
+    // 5. Discounts for THIS transaction
     let discountAmount = 0;
     let discountType = 'none';
     let discountValue = 0;
@@ -340,15 +431,15 @@ export const getPaymentInvoice = async (req, res) => {
       discountValue = Number(member.discountValue || 0);
     }
 
-    // 5. Total package payable for THIS transaction
+    // 6. Total package payable for THIS transaction
     const totalPackageFee = isDueClearance
       ? planFee
       : Math.max(0, grossTotal - discountAmount);
 
-    // 6. Current transaction payment amount received
+    // 7. Current transaction payment amount received
     const amountReceived = Number(payment.amount || 0);
 
-    // 7. Remaining dues for member
+    // 8. Remaining dues for member
     const remainingDues = member ? Number(member.dueAmount || 0) : Math.max(0, totalPackageFee - amountReceived);
 
     const isFullPayment = remainingDues === 0;
@@ -361,6 +452,8 @@ export const getPaymentInvoice = async (req, res) => {
         invoiceNo: payment.invoiceNo,
         paymentId: payment._id,
         date: payment.paidOn,
+        validityStartDate: payment.startDate || (isRenewal ? payment.paidOn : member?.startDate) || member?.startDate,
+        validityEndDate: payment.expiryDate || member?.expiryDate,
         amountPaid: amountReceived,
         paymentMethod: payment.method,
         paymentType: payment.paymentType,
@@ -391,6 +484,7 @@ export const getPaymentInvoice = async (req, res) => {
           startDate: member?.startDate || null,
           expiryDate: member?.expiryDate || null,
           status: member?.status || 'active',
+          admissionFee: Number(member?.admissionFee !== undefined ? member.admissionFee : admissionFee),
           withTrainer: hasTrainer,
           trainerName,
           trainerFee,
@@ -400,6 +494,7 @@ export const getPaymentInvoice = async (req, res) => {
         },
         financials: {
           planFee,
+          admissionFee,
           baseFee: planFee,
           trainerFee,
           trainerName,

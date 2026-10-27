@@ -25,6 +25,7 @@ const MemberSchema = new mongoose.Schema(
       enum: ['active', 'expiring', 'expired', 'frozen', 'due'],
       default: 'active',
     },
+    admissionFee: { type: Number, default: 0 },
     originalFee: { type: Number, default: 0 },
     discountType: {
       type: String,

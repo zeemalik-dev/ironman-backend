@@ -230,7 +230,17 @@ export const updateMembershipSettings = async (req, res) => {
 export const updateFinanceSettings = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const { currency, currencySymbol, dateFormat, timezone, taxRate } = req.body;
+    const {
+      currency,
+      currencySymbol,
+      dateFormat,
+      timezone,
+      taxRate,
+      checkInCutoffHour,
+      checkInCutoffMinute,
+      openingTime,
+      closingTime,
+    } = req.body;
 
     const gym = await Gym.findById(gymId);
     if (!gym) {
@@ -272,16 +282,39 @@ export const updateFinanceSettings = async (req, res) => {
     if (dateFormat) gym.dateFormat = dateFormat;
     if (timezone) gym.timezone = timezone;
 
+    if (!gym.settings) gym.settings = {};
+
     if (taxRate !== undefined) {
       const tax = Number(taxRate);
       if (isNaN(tax) || tax < 0 || tax > 100) {
         return res.status(400).json({ success: false, message: 'Tax rate must be between 0% and 100%' });
       }
-      if (!gym.settings) gym.settings = {};
       gym.settings.taxRate = tax;
-      gym.markModified('settings');
     }
 
+    if (checkInCutoffHour !== undefined) {
+      const hr = Number(checkInCutoffHour);
+      if (!isNaN(hr) && hr >= 0 && hr <= 23) {
+        gym.settings.checkInCutoffHour = hr;
+      }
+    }
+
+    if (checkInCutoffMinute !== undefined) {
+      const min = Number(checkInCutoffMinute);
+      if (!isNaN(min) && min >= 0 && min <= 59) {
+        gym.settings.checkInCutoffMinute = min;
+      }
+    }
+
+    if (openingTime !== undefined) {
+      gym.settings.openingTime = String(openingTime).trim();
+    }
+
+    if (closingTime !== undefined) {
+      gym.settings.closingTime = String(closingTime).trim();
+    }
+
+    gym.markModified('settings');
     await gym.save();
 
     await recordAudit(
