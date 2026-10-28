@@ -73,7 +73,7 @@ export const shiftGymDate = (dateStr, daysDelta, timezone = 'Asia/Karachi') => {
 export const checkIn = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const { identifier } = req.body; // memberId, phone, or cnic
+    const { identifier, timestamp } = req.body; // memberId, phone, or cnic
 
     if (!identifier) {
       return res.status(400).json({ success: false, message: 'Member ID, Phone, or CNIC required' });
@@ -96,7 +96,8 @@ export const checkIn = async (req, res) => {
     const timezone = gym?.timezone || 'Asia/Karachi';
     const cutoffHour = gym?.settings?.checkInCutoffHour ?? 0;
     const cutoffMinute = gym?.settings?.checkInCutoffMinute ?? 0;
-    const todayStr = getGymDateString(new Date(), timezone, cutoffHour, cutoffMinute);
+    const punchDate = timestamp ? new Date(timestamp) : new Date();
+    const todayStr = getGymDateString(punchDate, timezone, cutoffHour, cutoffMinute);
 
     // Check if member already checked in today
     const recentCheckIn = await Attendance.findOne({
@@ -129,7 +130,7 @@ export const checkIn = async (req, res) => {
       member: member._id,
       memberId: member.memberId,
       memberName: member.name,
-      checkInTime: new Date(),
+      checkInTime: punchDate,
       dateStr: todayStr,
       statusSnapshot: member.status,
     });

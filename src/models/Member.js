@@ -40,6 +40,7 @@ const MemberSchema = new mongoose.Schema(
     dueAmount: { type: Number, default: 0 },
     photoUrl: { type: String, default: '' },
     notes: { type: String, default: '' },
+    biometricUid: { type: Number, default: null },
     frozenAt: { type: Date, default: null },
     freezeReason: { type: String, default: '' },
   },
