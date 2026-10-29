@@ -40,8 +40,8 @@ export const createExpense = async (req, res) => {
     const gymId = req.gymId;
     const { title, category, amount, spentOn, receiptNo, notes } = req.body;
 
-    if (!title || !amount) {
-      return res.status(400).json({ success: false, message: 'Title and amount are required' });
+    if (!title || amount === undefined || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, message: 'Title and a positive amount are required' });
     }
 
     const expense = await Expense.create({

@@ -263,7 +263,7 @@ export const createMember = async (req, res) => {
     // 5. Calculate outstanding balance
     const dueAmount = Math.max(0, Math.round((finalFee - paid) * 100) / 100);
     const now = new Date();
-    const expiryDays = authoritativePlan?.durationDays || Number(durationDays) || 30;
+    const expiryDays = Math.max(1, authoritativePlan?.durationDays || Number(durationDays) || 30);
     const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
 
     // Auto generate memberId if not given
@@ -447,11 +447,13 @@ export const renewMembership = async (req, res) => {
       newExpiry = new Date(expiryDate);
     } else if (paymentDate) {
       const baseDate = new Date(paymentDate);
-      newExpiry = new Date(baseDate.getTime() + Number(durationDays) * 24 * 60 * 60 * 1000);
+      const safeDuration = Math.max(1, Number(durationDays) || 30);
+      newExpiry = new Date(baseDate.getTime() + safeDuration * 24 * 60 * 60 * 1000);
     } else {
       const currentExpiry = new Date(member.expiryDate);
       const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
-      newExpiry = new Date(baseDate.getTime() + Number(durationDays) * 24 * 60 * 60 * 1000);
+      const safeDuration = Math.max(1, Number(durationDays) || 30);
+      newExpiry = new Date(baseDate.getTime() + safeDuration * 24 * 60 * 60 * 1000);
     }
 
     // Preserve previous outstanding dues and calculate new renewal due
