@@ -12,8 +12,9 @@ const getDateBoundaries = (dateStr) => {
   const month = parseInt(parts[1], 10) - 1;
   const day = parseInt(parts[2], 10);
 
-  const dayStart = new Date(year, month, day, 0, 0, 0, 0);
-  const dayEnd = new Date(year, month, day, 23, 59, 59, 999);
+  // Gym is in Pakistan (PKT = UTC+5). The business day starts at 00:00:00 PKT = 19:00:00 UTC previous day.
+  const dayStart = new Date(Date.UTC(year, month, day, 0, 0, 0, 0) - 5 * 60 * 60 * 1000);
+  const dayEnd = new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
 
   return { dayStart, dayEnd };
 };
@@ -29,14 +30,15 @@ export const getCashClosing = async (req, res) => {
       ? new mongoose.Types.ObjectId(gymId)
       : gymId;
 
-    const todayStr = new Date().toISOString().split('T')[0];
-    const targetDateStr = req.query.date || todayStr;
+    const maxSelectableDate = new Date(Date.now() + 14 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const localTodayStr = new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const targetDateStr = req.query.date || localTodayStr;
 
-    // Reject future dates
-    if (targetDateStr > todayStr) {
+    // Reject future dates (allowing for local PKT timezone)
+    if (targetDateStr > maxSelectableDate) {
       return res.status(400).json({
         success: false,
-        message: `Future dates (${targetDateStr}) cannot be selected for cash closing. Max selectable date is today (${todayStr}).`,
+        message: `Future dates (${targetDateStr}) cannot be selected for cash closing. Max selectable date is ${localTodayStr}.`,
       });
     }
 
@@ -81,10 +83,25 @@ export const getCashClosing = async (req, res) => {
     ]);
 
     // 3. Fetch detailed line-item transactions for the drawer breakdown
-    const [cashPaymentsList, cashExpensesList] = await Promise.all([
+    const [cashPaymentsList, digitalPaymentsList, allPaymentsList, cashExpensesList] = await Promise.all([
       Payment.find({
         gymId,
         method: 'cash',
+        paidOn: { $gte: dayStart, $lte: dayEnd },
+      })
+        .sort({ paidOn: -1 })
+        .select('memberId memberName amount method paymentType invoiceNo receivedBy paidOn notes'),
+
+      Payment.find({
+        gymId,
+        method: { $ne: 'cash' },
+        paidOn: { $gte: dayStart, $lte: dayEnd },
+      })
+        .sort({ paidOn: -1 })
+        .select('memberId memberName amount method paymentType invoiceNo receivedBy paidOn notes'),
+
+      Payment.find({
+        gymId,
         paidOn: { $gte: dayStart, $lte: dayEnd },
       })
         .sort({ paidOn: -1 })
@@ -129,14 +146,20 @@ export const getCashClosing = async (req, res) => {
         financials: {
           openingCash: existingClosing ? existingClosing.openingCash : openingCash,
           cashIncome: existingClosing ? existingClosing.cashIncome : cashIncome,
+          digitalIncome: nonCashIncome,
+          totalIncome: (existingClosing ? existingClosing.cashIncome : cashIncome) + nonCashIncome,
           cashExpenses: existingClosing ? existingClosing.cashExpenses : cashExpenses,
           expectedCash: existingClosing ? existingClosing.expectedCash : calculatedExpectedCash,
           nonCashIncome,
           cashTransactionsCount: cashPaymentsList.length,
+          digitalTransactionsCount: digitalPaymentsList.length,
+          totalTransactionsCount: allPaymentsList.length,
           cashExpensesCount: cashExpensesList.length,
         },
         transactions: {
+          allPayments: allPaymentsList,
           cashPayments: cashPaymentsList,
+          digitalPayments: digitalPaymentsList,
           cashExpenses: cashExpensesList,
         },
       },
@@ -168,15 +191,16 @@ export const closeCashDay = async (req, res) => {
     const dateInput = req.body.date || req.body.dateStr;
     const { countedCash, notes, openingCashOverride } = req.body;
 
-    const todayStr = new Date().toISOString().split('T')[0];
-    const targetDateStr = dateInput || todayStr;
+    const maxSelectableDate = new Date(Date.now() + 14 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const localTodayStr = new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const targetDateStr = dateInput || localTodayStr;
 
     // 1. Validate date
     if (!targetDateStr) {
       return res.status(400).json({ success: false, message: 'Date is required for cash closing' });
     }
 
-    if (targetDateStr > todayStr) {
+    if (targetDateStr > maxSelectableDate) {
       return res.status(400).json({
         success: false,
         message: 'Cannot close cash for future dates. Max allowed date is today.',

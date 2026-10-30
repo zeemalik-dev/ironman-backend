@@ -39,9 +39,20 @@ export const getPayments = async (req, res) => {
       let end = null;
 
       if (period === 'today' || period === 'daily') {
-        const d = date ? new Date(date) : now;
-        start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
-        end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+        let y, m, day;
+        if (date && typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          const parts = date.split('-').map(Number);
+          y = parts[0];
+          m = parts[1] - 1;
+          day = parts[2];
+        } else {
+          const localNow = new Date(Date.now() + 5 * 60 * 60 * 1000);
+          y = localNow.getUTCFullYear();
+          m = localNow.getUTCMonth();
+          day = localNow.getUTCDate();
+        }
+        start = new Date(Date.UTC(y, m, day, 0, 0, 0, 0) - 5 * 60 * 60 * 1000);
+        end = new Date(Date.UTC(y, m, day, 23, 59, 59, 999));
       } else if (period === 'weekly') {
         const d = date ? new Date(date) : now;
         const endDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
@@ -61,11 +72,11 @@ export const getPayments = async (req, res) => {
       } else if (period === 'custom' || startDate || endDate) {
         if (startDate) {
           const s = new Date(startDate);
-          start = new Date(s.getFullYear(), s.getMonth(), s.getDate(), 0, 0, 0, 0);
+          start = new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate(), 0, 0, 0, 0) - 5 * 60 * 60 * 1000);
         }
         if (endDate) {
           const e = new Date(endDate);
-          end = new Date(e.getFullYear(), e.getMonth(), e.getDate(), 23, 59, 59, 999);
+          end = new Date(Date.UTC(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate(), 23, 59, 59, 999));
         }
       }
 

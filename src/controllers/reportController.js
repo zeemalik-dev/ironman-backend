@@ -23,9 +23,26 @@ export const resolveDateRange = (preset = 'monthly', customStart, customEnd, opt
   switch (normalizedPeriod) {
     case 'daily':
     case 'today': {
-      const baseDate = options.date || customStart ? new Date(options.date || customStart) : now;
-      startDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), 0, 0, 0, 0);
-      endDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), 23, 59, 59, 999);
+      let y, m, day;
+      const dateVal = options.date || customStart;
+      if (dateVal && typeof dateVal === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
+        const parts = dateVal.split('-').map(Number);
+        y = parts[0];
+        m = parts[1] - 1;
+        day = parts[2];
+      } else if (dateVal) {
+        const baseDate = new Date(dateVal);
+        y = baseDate.getFullYear();
+        m = baseDate.getMonth();
+        day = baseDate.getDate();
+      } else {
+        const localNow = new Date(Date.now() + 5 * 60 * 60 * 1000);
+        y = localNow.getUTCFullYear();
+        m = localNow.getUTCMonth();
+        day = localNow.getUTCDate();
+      }
+      startDate = new Date(Date.UTC(y, m, day, 0, 0, 0, 0) - 5 * 60 * 60 * 1000);
+      endDate = new Date(Date.UTC(y, m, day, 23, 59, 59, 999));
       break;
     }
 
