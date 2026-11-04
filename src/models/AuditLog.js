@@ -9,7 +9,7 @@ const AuditLogSchema = new mongoose.Schema(
     action: { type: String, required: true },
     section: {
       type: String,
-      enum: ['profile', 'membership', 'finance', 'notifications', 'staff', 'system'],
+      enum: ['profile', 'membership', 'finance', 'notifications', 'socials', 'staff', 'system'],
       default: 'system',
     },
     description: { type: String, required: true },

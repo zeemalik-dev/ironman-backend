@@ -484,6 +484,7 @@ export const getPaymentInvoice = async (req, res) => {
           currency: gym?.currency || 'PKR',
           currencySymbol: gym?.currencySymbol || 'PKR',
           cancellationPolicy: gym?.settings?.cancellationPolicy || 'Memberships are non-refundable once activated.',
+          socialLinks: gym?.settings?.socialLinks || {},
         },
         member: {
           memberId: member?.memberId || payment.memberId,

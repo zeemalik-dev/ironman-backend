@@ -5,6 +5,7 @@ import {
   updateMembershipSettings,
   updateFinanceSettings,
   updateNotificationSettings,
+  updateSocialSettings,
   getStaffUsers,
   createStaffUser,
   updateStaffUser,
@@ -24,6 +25,7 @@ router.get('/audit-logs', requireRole('superadmin', 'owner'), getAuditLogs);
 
 // Notification preferences can be configured by owners & frontdesk
 router.patch('/notifications', requireRole('superadmin', 'owner', 'receptionist'), updateNotificationSettings);
+router.patch('/socials', requireRole('superadmin', 'owner', 'receptionist'), updateSocialSettings);
 
 // Gym Profile, Membership, Finance, and Staff Management restricted to Gym Owners & SuperAdmins
 router.patch('/profile', requireRole('superadmin', 'owner'), updateGymProfile);

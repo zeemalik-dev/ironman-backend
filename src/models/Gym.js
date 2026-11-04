@@ -68,6 +68,13 @@ const GymSchema = new mongoose.Schema(
       checkInCutoffMinute: { type: Number, default: 0, min: 0, max: 59 },
       openingTime: { type: String, default: '06:00' },
       closingTime: { type: String, default: '23:00' },
+      socialLinks: {
+        instagram: { type: String, default: '' },
+        facebook: { type: String, default: '' },
+        youtube: { type: String, default: '' },
+        x: { type: String, default: '' },
+        whatsappGroup: { type: String, default: '' },
+      },
     },
   },
   { timestamps: true }

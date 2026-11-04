@@ -410,6 +410,61 @@ export const updateNotificationSettings = async (req, res) => {
 };
 
 /**
+ * PATCH /api/settings/socials
+ * Updates social media & community group links (Instagram, Facebook, YouTube, X, WhatsApp Group)
+ */
+export const updateSocialSettings = async (req, res) => {
+  try {
+    const gymId = req.gymId;
+    const { instagram, facebook, youtube, x, whatsappGroup } = req.body;
+
+    const gym = await Gym.findById(gymId);
+    if (!gym) {
+      return res.status(404).json({ success: false, message: 'Gym not found' });
+    }
+
+    if (!gym.settings) {
+      gym.settings = {};
+    }
+    if (!gym.settings.socialLinks) {
+      gym.settings.socialLinks = {};
+    }
+
+    if (instagram !== undefined) gym.settings.socialLinks.instagram = String(instagram).trim();
+    if (facebook !== undefined) gym.settings.socialLinks.facebook = String(facebook).trim();
+    if (youtube !== undefined) gym.settings.socialLinks.youtube = String(youtube).trim();
+    if (x !== undefined) gym.settings.socialLinks.x = String(x).trim();
+    if (whatsappGroup !== undefined) gym.settings.socialLinks.whatsappGroup = String(whatsappGroup).trim();
+
+    gym.markModified('settings');
+    await gym.save();
+
+    try {
+      await recordAudit(
+        gymId,
+        req.user,
+        'UPDATE_SOCIAL_SETTINGS',
+        'socials',
+        'Updated gym social media and community links',
+        { socialLinks: gym.settings.socialLinks }
+      );
+    } catch (auditErr) {
+      console.warn('[Socials Audit Warning]', auditErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Social links updated successfully',
+      socialLinks: gym.settings.socialLinks,
+      settings: gym.settings,
+      gym,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
  * GET /api/settings/staff
  * Lists staff users belonging to the authenticated gym.
  */
