@@ -15,6 +15,7 @@ const UserSchema = new mongoose.Schema(
     phone: { type: String, default: '' },
     avatarUrl: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
+    accessPassword: { type: String, default: null },
     resetPasswordOtp: { type: String, default: null },
     resetPasswordExpires: { type: Date, default: null },
   },
@@ -22,14 +23,24 @@ const UserSchema = new mongoose.Schema(
 );
 
 UserSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+  if (this.isModified('password')) {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+  }
+  if (this.isModified('accessPassword') && this.accessPassword) {
+    const salt = await bcrypt.genSalt(10);
+    this.accessPassword = await bcrypt.hash(this.accessPassword, salt);
+  }
   next();
 });
 
 UserSchema.methods.comparePassword = async function (candidate) {
   return bcrypt.compare(candidate, this.password);
+};
+
+UserSchema.methods.compareAccessPassword = async function (candidate) {
+  const target = this.accessPassword || this.password;
+  return bcrypt.compare(candidate, target);
 };
 
 export const User = mongoose.model('User', UserSchema);

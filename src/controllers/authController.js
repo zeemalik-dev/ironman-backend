@@ -224,7 +224,7 @@ export const verifyPassword = async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) {
-      return res.status(400).json({ success: false, message: 'Admin password is required' });
+      return res.status(400).json({ success: false, message: 'Password is required' });
     }
 
     const user = await User.findById(req.user.userId);
@@ -232,15 +232,76 @@ export const verifyPassword = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const isMatch = await user.comparePassword(password);
+    // Compares against accessPassword if set, or defaults to main password
+    const isMatch = await user.compareAccessPassword(password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid admin password. Action verification failed.',
+        message: 'Invalid access password. Verification failed.',
       });
     }
 
     res.json({ success: true, message: 'Password verified successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const changeAccessPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Both current password and new access password are required',
+      });
+    }
+
+    if (newPassword.trim().length < 4) {
+      return res.status(400).json({
+        success: false,
+        message: 'New access password must be at least 4 characters long',
+      });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Validate current password (matches accessPassword if set, or main password if default)
+    const isMatch = await user.compareAccessPassword(currentPassword);
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: 'Current password is incorrect.',
+      });
+    }
+
+    // Set new access password (will be hashed by pre-save hook)
+    user.accessPassword = newPassword.trim();
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Access password updated successfully for all protected sections and actions',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const getAccessPasswordStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    res.json({
+      success: true,
+      isCustomized: Boolean(user.accessPassword),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

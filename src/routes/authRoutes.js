@@ -4,6 +4,8 @@ import {
   getMe,
   logout,
   verifyPassword,
+  changeAccessPassword,
+  getAccessPasswordStatus,
   forgotPassword,
   verifyOtp,
   resetPassword,
@@ -19,5 +21,7 @@ router.post('/reset-password', resetPassword);
 router.get('/me', authenticate, getMe);
 router.post('/logout', authenticate, logout);
 router.post('/verify-password', authenticate, verifyPassword);
+router.post('/change-access-password', authenticate, changeAccessPassword);
+router.get('/access-password-status', authenticate, getAccessPasswordStatus);
 
 export default router;
