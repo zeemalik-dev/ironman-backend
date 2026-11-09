@@ -82,8 +82,11 @@ export const checkIn = async (req, res) => {
     const member = await Member.findOne({
       gymId,
       $or: [
+        { machineUserId: identifier.trim() },
+        { memberCode: identifier.trim() },
         { memberId: identifier.trim() },
         { phone: identifier.trim() },
+        { mobile: identifier.trim() },
         { cnic: identifier.trim() },
       ],
     });

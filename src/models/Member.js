@@ -3,15 +3,22 @@ import mongoose from 'mongoose';
 const MemberSchema = new mongoose.Schema(
   {
     gymId: { type: mongoose.Schema.Types.ObjectId, ref: 'Gym', required: true, index: true },
+    softwareId: { type: Number, index: true },
+    memberCode: { type: String, trim: true, index: true },
+    machineUserId: { type: String, default: null, trim: true, index: true },
+    machineUid: { type: Number, default: null },
+    machinePassword: { type: String, default: null, trim: true },
+    fingerprintCount: { type: Number, default: 0 },
     memberId: { type: String, required: true, trim: true },
     name: { type: String, required: true, trim: true },
-    phone: { type: String, required: true, trim: true },
-    cnic: { type: String, default: '', trim: true },
+    phone: { type: String, default: '', trim: true },
+    mobile: { type: String, default: null, trim: true },
+    cnic: { type: String, default: null, trim: true },
     address: { type: String, default: '' },
     emergencyContact: { type: String, default: '' },
+    planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', default: null },
     plan: {
       type: String,
-      enum: ['daypass', 'monthly', 'quarterly', 'halfyearly', 'yearly', 'pt'],
       default: 'monthly',
     },
     withTrainer: { type: Boolean, default: false },
@@ -23,7 +30,7 @@ const MemberSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ['active', 'expiring', 'expired', 'frozen', 'due'],
-      default: 'active',
+      default: 'expired',
     },
     admissionFee: { type: Number, default: 0 },
     originalFee: { type: Number, default: 0 },
@@ -48,5 +55,8 @@ const MemberSchema = new mongoose.Schema(
 );
 
 MemberSchema.index({ gymId: 1, memberId: 1 }, { unique: true });
+MemberSchema.index({ gymId: 1, softwareId: 1 }, { unique: true, sparse: true });
+MemberSchema.index({ gymId: 1, memberCode: 1 }, { unique: true, sparse: true });
+MemberSchema.index({ gymId: 1, machineUserId: 1 }, { sparse: true });
 
 export const Member = mongoose.model('Member', MemberSchema);

@@ -50,11 +50,16 @@ export const getMembers = async (req, res) => {
       filter.plan = plan;
     }
     if (q) {
+      const qNum = parseInt(q, 10);
       filter.$or = [
         { name: { $regex: q, $options: 'i' } },
         { memberId: { $regex: q, $options: 'i' } },
+        { memberCode: { $regex: q, $options: 'i' } },
+        { machineUserId: { $regex: q, $options: 'i' } },
         { phone: { $regex: q, $options: 'i' } },
+        { mobile: { $regex: q, $options: 'i' } },
         { cnic: { $regex: q, $options: 'i' } },
+        ...(!isNaN(qNum) ? [{ softwareId: qNum }] : []),
       ];
     }
 
@@ -266,36 +271,46 @@ export const createMember = async (req, res) => {
     const expiryDays = Math.max(1, authoritativePlan?.durationDays || Number(durationDays) || 30);
     const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
 
-    // Auto generate memberId if not given
-    let memberId = req.body.memberId;
-    if (!memberId) {
-      const existingMembers = await Member.find({ gymId }, { memberId: 1 }).lean();
-      let maxNum = 1000;
-      for (const m of existingMembers) {
-        if (!m.memberId) continue;
-        const match = String(m.memberId).match(/\d+/);
-        if (match) {
-          const num = parseInt(match[0], 10);
-          if (!isNaN(num) && num > maxNum) {
-            maxNum = num;
-          }
-        }
-      }
-      let candidateSeq = maxNum + 1;
-      while (await Member.exists({ gymId, memberId: `M-${candidateSeq}` })) {
-        candidateSeq++;
-      }
-      memberId = `M-${candidateSeq}`;
+    // Auto generate softwareId (starting from 2331) and memberCode (AGL-002331)
+    let softwareId = req.body.softwareId ? Number(req.body.softwareId) : null;
+    let memberCode = req.body.memberCode ? String(req.body.memberCode).trim() : '';
+
+    if (!softwareId) {
+      const highestMember = await Member.findOne({ gymId, softwareId: { $exists: true, $ne: null } })
+        .sort({ softwareId: -1 })
+        .select('softwareId')
+        .lean();
+      const maxSwId = highestMember && typeof highestMember.softwareId === 'number' ? highestMember.softwareId : 2330;
+      softwareId = Math.max(2331, maxSwId + 1);
     }
+
+    if (!memberCode) {
+      memberCode = `AGL-${String(softwareId).padStart(6, '0')}`;
+    }
+
+    let memberId = req.body.memberId || memberCode;
+    let machineUserId = req.body.machineUserId ? String(req.body.machineUserId) : String(softwareId);
+    let machinePassword = req.body.machinePassword || `velo${softwareId}`;
+    let biometricUid = req.body.biometricUid !== undefined && req.body.biometricUid !== null
+      ? Number(req.body.biometricUid)
+      : (!isNaN(Number(machineUserId)) ? Number(machineUserId) : null);
 
     const member = await Member.create({
       gymId,
+      softwareId,
+      memberCode,
+      machineUserId,
+      machinePassword,
+      fingerprintCount: req.body.fingerprintCount || 0,
       memberId,
+      biometricUid,
       name,
-      phone,
-      cnic,
+      phone: phone || '',
+      mobile: req.body.mobile || phone || null,
+      cnic: cnic || null,
       address,
       emergencyContact,
+      planId: authoritativePlan ? authoritativePlan._id : (mongoose.Types.ObjectId.isValid(plan) ? plan : null),
       plan: authoritativePlan ? authoritativePlan.planType : (plan || 'monthly'),
       withTrainer: isWithTrainer,
       trainerId: isWithTrainer && assignedTrainer ? assignedTrainer._id : undefined,
