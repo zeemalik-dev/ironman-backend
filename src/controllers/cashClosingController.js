@@ -136,13 +136,22 @@ export const getCashClosing = async (req, res) => {
 
     const calculatedExpectedCash = openingCash + cashIncome - cashExpenses;
 
+    let history = [];
+    if (req.query.limit || req.query.history) {
+      history = await CashClosing.find({ gymId })
+        .sort({ dateStr: -1 })
+        .limit(Number(req.query.limit) || 100);
+    }
+
     res.json({
       success: true,
       data: {
         dateStr: targetDateStr,
-        isToday: targetDateStr === todayStr,
+        isToday: targetDateStr === localTodayStr,
         isClosed: Boolean(existingClosing),
         closingRecord: existingClosing || null,
+        history,
+        closingsList: history,
         financials: {
           openingCash: existingClosing ? existingClosing.openingCash : openingCash,
           cashIncome: existingClosing ? existingClosing.cashIncome : cashIncome,
