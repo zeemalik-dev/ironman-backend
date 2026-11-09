@@ -6,6 +6,8 @@ import { Gym } from '../models/Gym.js';
  * Returns YYYY-MM-DD string for a date in the given timezone (default Asia/Karachi),
  * respecting gym checkInCutoffHour and checkInCutoffMinute (e.g. if cutoff is 04:00 AM,
  * any time between 04:00 AM Today and 03:59 AM Tomorrow counts as "Today").
+ * IMPORTANT: This strictly calculates the business calendar date (dateStr) bucket
+ * and MUST NEVER modify the actual punch timestamp (checkInTime).
  */
 export const getGymDateString = (
   date = new Date(),
@@ -16,8 +18,8 @@ export const getGymDateString = (
   const d = date instanceof Date ? new Date(date) : new Date(date);
 
   // If cutoff is not midnight (00:00), subtract cutoff offset from current time
-  // so that the 24h operational cycle shifts seamlessly.
-  // Example: if cutoff is 04:00 AM, at 02:00 AM on Oct 27, (02:00 - 4h) = 10:00 PM on Oct 26.
+  // so that the 24h operational cycle shifts seamlessly into the business date.
+  // Example: if cutoff is 04:00 AM, at 02:00 AM on Nov 10, (02:00 - 4h) = 10:00 PM on Nov 09.
   if (cutoffHour > 0 || cutoffMinute > 0) {
     const offsetMs = (cutoffHour * 60 + cutoffMinute) * 60 * 1000;
     d.setTime(d.getTime() - offsetMs);
@@ -30,6 +32,62 @@ export const getGymDateString = (
     day: '2-digit',
   });
   return formatter.format(d);
+};
+
+/**
+ * Safely parses an incoming check-in timestamp in the gym's local timezone.
+ * If the timestamp is a naive string without timezone information (e.g. "YYYY-MM-DDTHH:mm:ss" from biometric machine),
+ * it interprets it directly in the gym's configured timezone (e.g. Asia/Karachi, UTC+5)
+ * rather than the server's environment timezone (e.g. UTC on Railway),
+ * ensuring the recorded check-in time always matches the exact real-world punch time.
+ */
+export const parseGymTimestamp = (timestamp, timezone = 'Asia/Karachi') => {
+  if (!timestamp) return new Date();
+  if (timestamp instanceof Date) return isNaN(timestamp.getTime()) ? new Date() : timestamp;
+  if (typeof timestamp === 'number') return new Date(timestamp);
+
+  const str = String(timestamp).trim();
+  // If already contains ISO timezone marker (Z or +HH:mm or -HH:mm)
+  if (/([+-]\d{2}:?\d{2}|Z)$/i.test(str)) {
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? new Date() : d;
+  }
+
+  // Naive date-time e.g. "2026-11-10T04:10:00" or "2026-11-10 04:10:00"
+  try {
+    const clean = str.replace(' ', 'T');
+    const [dPart, tPart = '00:00:00'] = clean.split('T');
+    const [y, m, d] = dPart.split('-').map(Number);
+    const [hh, mm, ss = 0] = tPart.split(':').map(Number);
+
+    const testDate = new Date(Date.UTC(y, m - 1, d, hh, mm, Math.floor(ss)));
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      hourCycle: 'h23',
+    }).formatToParts(testDate);
+
+    const p = {};
+    for (const part of parts) p[part.type] = part.value;
+    const inTzAsUtc = Date.UTC(
+      Number(p.year),
+      Number(p.month) - 1,
+      Number(p.day),
+      p.hour === '24' ? 0 : Number(p.hour),
+      Number(p.minute),
+      Number(p.second)
+    );
+    const offsetMs = inTzAsUtc - testDate.getTime();
+    return new Date(testDate.getTime() - offsetMs);
+  } catch {
+    const fallback = new Date(str);
+    return isNaN(fallback.getTime()) ? new Date() : fallback;
+  }
 };
 
 /**
@@ -99,7 +157,7 @@ export const checkIn = async (req, res) => {
     const timezone = gym?.timezone || 'Asia/Karachi';
     const cutoffHour = gym?.settings?.checkInCutoffHour ?? 0;
     const cutoffMinute = gym?.settings?.checkInCutoffMinute ?? 0;
-    const punchDate = timestamp ? new Date(timestamp) : new Date();
+    const punchDate = parseGymTimestamp(timestamp, timezone);
     const todayStr = getGymDateString(punchDate, timezone, cutoffHour, cutoffMinute);
 
     // Check if member already checked in today
@@ -359,9 +417,9 @@ export const getAttendanceHistory = async (req, res) => {
     for (const dayStr of datesList) {
       const { startOfDay: dayStartUtc, endOfDay: dayEndUtc } = getDayBounds(dayStr, timezone);
 
-      // Find attendances matching this day
+      // Find attendances matching this operational gym day (strictly prioritize dateStr)
       const dayAttendances = attendances.filter((a) => {
-        if (a.dateStr === dayStr) return true;
+        if (a.dateStr) return a.dateStr === dayStr;
         if (a.checkInTime) {
           const t = new Date(a.checkInTime).getTime();
           return t >= dayStartUtc.getTime() && t <= dayEndUtc.getTime();
