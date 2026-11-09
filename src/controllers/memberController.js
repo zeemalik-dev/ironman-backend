@@ -65,7 +65,7 @@ export const getMembers = async (req, res) => {
 
     const skip = (Number(page) - 1) * Number(limit);
     const [members, total] = await Promise.all([
-      Member.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+      Member.find(filter).sort({ softwareId: -1, createdAt: -1 }).skip(skip).limit(Number(limit)),
       Member.countDocuments(filter),
     ]);
 
