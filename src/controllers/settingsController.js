@@ -108,6 +108,17 @@ export const updateGymProfile = async (req, res) => {
     if (logoUrl !== undefined) {
       gym.logoUrl = logoUrl;
     }
+    if (req.body.deviceIp !== undefined) {
+      gym.deviceIp = String(req.body.deviceIp || '').trim();
+      if (!gym.settings) gym.settings = {};
+      gym.settings.deviceIp = String(req.body.deviceIp || '').trim();
+    }
+    if (req.body.devicePort !== undefined) {
+      const port = Number(req.body.devicePort) || 4370;
+      gym.devicePort = port;
+      if (!gym.settings) gym.settings = {};
+      gym.settings.devicePort = port;
+    }
 
     await gym.save();
 
@@ -641,5 +652,53 @@ export const getAuditLogs = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * PATCH /api/settings/device
+ * Updates biometric hardware IP & port for the gym.
+ */
+export const updateDeviceSettings = async (req, res) => {
+  try {
+    const gymId = req.gymId;
+    const { deviceIp, devicePort } = req.body;
+
+    const gym = await Gym.findById(gymId);
+    if (!gym) {
+      return res.status(404).json({ success: false, message: 'Gym not found' });
+    }
+
+    if (!gym.settings) gym.settings = {};
+
+    if (deviceIp !== undefined) {
+      const cleanIp = String(deviceIp || '').trim();
+      gym.deviceIp = cleanIp;
+      gym.settings.deviceIp = cleanIp;
+    }
+    if (devicePort !== undefined) {
+      const port = Number(devicePort) || 4370;
+      gym.devicePort = port;
+      gym.settings.devicePort = port;
+    }
+
+    await gym.save();
+
+    await recordAudit(
+      gymId,
+      req.user,
+      'update',
+      'device',
+      `Updated biometric device IP to "${gym.deviceIp}:${gym.devicePort}"`,
+      { deviceIp: gym.deviceIp, devicePort: gym.devicePort }
+    );
+
+    return res.json({
+      success: true,
+      message: 'Biometric device settings saved successfully',
+      gym: gym.toObject(),
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

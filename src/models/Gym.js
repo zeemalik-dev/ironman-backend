@@ -45,7 +45,11 @@ const GymSchema = new mongoose.Schema(
       type: Date,
       default: () => new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
     },
+    deviceIp: { type: String, default: '192.168.1.201', trim: true },
+    devicePort: { type: Number, default: 4370 },
     settings: {
+      deviceIp: { type: String, default: '', trim: true },
+      devicePort: { type: Number, default: 4370 },
       taxRate: { type: Number, default: 0 },
       allowPartialPayments: { type: Boolean, default: true },
       freezeFee: { type: Number, default: 500 },

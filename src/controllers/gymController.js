@@ -86,6 +86,8 @@ export const createGym = async (req, res) => {
       subscriptionPlan: subscriptionPlan || 'pro',
       mrrAmount: mrrAmount || 4999,
       currency: currency || 'PKR',
+      deviceIp: req.body.deviceIp || '',
+      devicePort: req.body.devicePort || 4370,
     });
 
     let ownerUser = null;
