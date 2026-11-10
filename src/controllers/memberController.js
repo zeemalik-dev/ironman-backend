@@ -9,7 +9,7 @@ import { CashClosing } from '../models/CashClosing.js';
 export const getMembers = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const { q, status, plan, limit = 100, page = 1 } = req.query;
+    const { q, searchBy = 'id', status, plan, limit = 100, page = 1 } = req.query;
 
     const now = new Date();
 
@@ -80,29 +80,55 @@ export const getMembers = async (req, res) => {
         }
       }
 
-      const conditions = [
-        { name: { $regex: qClean, $options: 'i' } },
-        { memberId: { $regex: qClean, $options: 'i' } },
-        { memberCode: { $regex: qClean, $options: 'i' } },
-        { machineUserId: { $regex: qClean, $options: 'i' } },
-      ];
+      const conditions = [];
 
-      if (targetIds.length > 0) {
-        conditions.push({ softwareId: { $in: targetIds } });
-      }
-
-      if (paddedVariants.length > 0) {
-        const uniqueVariants = Array.from(new Set(paddedVariants));
-        for (const v of uniqueVariants) {
-          conditions.push({ memberCode: { $regex: v + '$' } });
-          conditions.push({ memberId: { $regex: v + '$' } });
+      if (searchBy === 'id') {
+        conditions.push(
+          { memberId: { $regex: qClean, $options: 'i' } },
+          { memberCode: { $regex: qClean, $options: 'i' } },
+          { machineUserId: { $regex: qClean, $options: 'i' } }
+        );
+        if (targetIds.length > 0) {
+          conditions.push({ softwareId: { $in: targetIds } });
         }
-      }
-
-      if (isPhoneLike) {
-        conditions.push({ phone: { $regex: qClean, $options: 'i' } });
-        conditions.push({ mobile: { $regex: qClean, $options: 'i' } });
-        conditions.push({ cnic: { $regex: qClean, $options: 'i' } });
+        if (paddedVariants.length > 0) {
+          const uniqueVariants = Array.from(new Set(paddedVariants));
+          for (const v of uniqueVariants) {
+            conditions.push({ memberCode: { $regex: v + '$' } });
+            conditions.push({ memberId: { $regex: v + '$' } });
+          }
+        }
+      } else if (searchBy === 'name') {
+        conditions.push({ name: { $regex: qClean, $options: 'i' } });
+      } else if (searchBy === 'phone') {
+        conditions.push(
+          { phone: { $regex: qClean, $options: 'i' } },
+          { mobile: { $regex: qClean, $options: 'i' } },
+          { cnic: { $regex: qClean, $options: 'i' } }
+        );
+      } else {
+        // 'all' or fallback
+        conditions.push(
+          { name: { $regex: qClean, $options: 'i' } },
+          { memberId: { $regex: qClean, $options: 'i' } },
+          { memberCode: { $regex: qClean, $options: 'i' } },
+          { machineUserId: { $regex: qClean, $options: 'i' } }
+        );
+        if (targetIds.length > 0) {
+          conditions.push({ softwareId: { $in: targetIds } });
+        }
+        if (paddedVariants.length > 0) {
+          const uniqueVariants = Array.from(new Set(paddedVariants));
+          for (const v of uniqueVariants) {
+            conditions.push({ memberCode: { $regex: v + '$' } });
+            conditions.push({ memberId: { $regex: v + '$' } });
+          }
+        }
+        if (isPhoneLike) {
+          conditions.push({ phone: { $regex: qClean, $options: 'i' } });
+          conditions.push({ mobile: { $regex: qClean, $options: 'i' } });
+          conditions.push({ cnic: { $regex: qClean, $options: 'i' } });
+        }
       }
 
       filter.$or = conditions;
@@ -126,7 +152,24 @@ export const getMembers = async (req, res) => {
         const mMatch = code.match(/\d+/g);
         const trailing = mMatch && mMatch.length > 0 ? mMatch[mMatch.length - 1] : '';
         const numId = trailing ? parseInt(trailing, 10) : NaN;
+        const name = String(m.name || '').toLowerCase();
+        const phone = String(m.phone || m.mobile || '');
 
+        if (searchBy === 'name') {
+          if (name === qClean) return 10;
+          if (name.startsWith(qClean)) return 20;
+          if (name.includes(qClean)) return 30;
+          return 100;
+        }
+
+        if (searchBy === 'phone') {
+          if (phone === qClean) return 10;
+          if (phone.startsWith(qClean)) return 20;
+          if (phone.includes(qClean)) return 30;
+          return 100;
+        }
+
+        // searchBy === 'id' or default
         if (isNum) {
           if (sw === qN || numId === qN) return 10;
           const rep = qClean[0];
@@ -137,8 +180,8 @@ export const getMembers = async (req, res) => {
           if (code.includes(qClean)) return 100 + (numId || 0);
           return 200;
         }
-        if (code === qClean || String(m.name || '').toLowerCase() === qClean) return 10;
-        if (String(m.name || '').toLowerCase().startsWith(qClean)) return 20;
+        if (code === qClean || name === qClean) return 10;
+        if (name.startsWith(qClean)) return 20;
         if (code.includes(qClean)) return 30;
         return 100;
       };
