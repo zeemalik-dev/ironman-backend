@@ -50,17 +50,62 @@ export const getMembers = async (req, res) => {
       filter.plan = plan;
     }
     if (q) {
-      const qNum = parseInt(q, 10);
-      filter.$or = [
-        { name: { $regex: q, $options: 'i' } },
-        { memberId: { $regex: q, $options: 'i' } },
-        { memberCode: { $regex: q, $options: 'i' } },
-        { machineUserId: { $regex: q, $options: 'i' } },
-        { phone: { $regex: q, $options: 'i' } },
-        { mobile: { $regex: q, $options: 'i' } },
-        { cnic: { $regex: q, $options: 'i' } },
-        ...(!isNaN(qNum) ? [{ softwareId: qNum }] : []),
+      const qClean = String(q).trim();
+      const isNumeric = /^\d+$/.test(qClean);
+      const qNum = isNumeric ? parseInt(qClean, 10) : NaN;
+      // Phone/CNIC search should only trigger if input is 6+ digits or starts with phone indicators
+      const isPhoneLike =
+        !isNaN(qNum) &&
+        (qClean.length >= 6 || qClean.startsWith('03') || qClean.startsWith('92') || qClean.startsWith('+92'));
+
+      const targetIds = [];
+      const paddedVariants = [];
+
+      if (isNumeric) {
+        targetIds.push(qNum);
+        for (let len = qClean.length; len <= 6; len++) {
+          paddedVariants.push(qClean.padStart(len, '0'));
+        }
+
+        // Repetition variants (e.g. "1" -> "11", "111", "1111", "11111")
+        const rep = qClean[0];
+        if (new RegExp(`^${rep}+$`).test(qClean)) {
+          for (let rLen = qClean.length + 1; rLen <= 5; rLen++) {
+            const repStr = rep.repeat(rLen);
+            targetIds.push(parseInt(repStr, 10));
+            for (let l = repStr.length; l <= 6; l++) {
+              paddedVariants.push(repStr.padStart(l, '0'));
+            }
+          }
+        }
+      }
+
+      const conditions = [
+        { name: { $regex: qClean, $options: 'i' } },
+        { memberId: { $regex: qClean, $options: 'i' } },
+        { memberCode: { $regex: qClean, $options: 'i' } },
+        { machineUserId: { $regex: qClean, $options: 'i' } },
       ];
+
+      if (targetIds.length > 0) {
+        conditions.push({ softwareId: { $in: targetIds } });
+      }
+
+      if (paddedVariants.length > 0) {
+        const uniqueVariants = Array.from(new Set(paddedVariants));
+        for (const v of uniqueVariants) {
+          conditions.push({ memberCode: { $regex: v + '$' } });
+          conditions.push({ memberId: { $regex: v + '$' } });
+        }
+      }
+
+      if (isPhoneLike) {
+        conditions.push({ phone: { $regex: qClean, $options: 'i' } });
+        conditions.push({ mobile: { $regex: qClean, $options: 'i' } });
+        conditions.push({ cnic: { $regex: qClean, $options: 'i' } });
+      }
+
+      filter.$or = conditions;
     }
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -68,6 +113,42 @@ export const getMembers = async (req, res) => {
       Member.find(filter).sort({ softwareId: -1, createdAt: -1 }).skip(skip).limit(Number(limit)),
       Member.countDocuments(filter),
     ]);
+
+    // Apply intelligent search relevance sorting if query is present
+    if (q) {
+      const qClean = String(q).trim().toLowerCase();
+      const isNum = /^\d+$/.test(qClean);
+      const qN = isNum ? parseInt(qClean, 10) : NaN;
+
+      const getRelevance = (m) => {
+        const sw = m.softwareId !== undefined && m.softwareId !== null ? Number(m.softwareId) : NaN;
+        const code = String(m.memberCode || m.memberId || '').toLowerCase();
+        const mMatch = code.match(/\d+/g);
+        const trailing = mMatch && mMatch.length > 0 ? mMatch[mMatch.length - 1] : '';
+        const numId = trailing ? parseInt(trailing, 10) : NaN;
+
+        if (isNum) {
+          if (sw === qN || numId === qN) return 10;
+          const rep = qClean[0];
+          if (trailing && new RegExp('^' + rep + '+$').test(trailing)) return 20 + trailing.length;
+          if (!isNaN(sw) && new RegExp('^' + rep + '+$').test(String(sw))) return 20 + String(sw).length;
+          if (trailing && trailing.replace(/^0+/, '').startsWith(qClean)) return 50 + trailing.length;
+          if (!isNaN(sw) && String(sw).startsWith(qClean)) return 50 + String(sw).length;
+          if (code.includes(qClean)) return 100 + (numId || 0);
+          return 200;
+        }
+        if (code === qClean || String(m.name || '').toLowerCase() === qClean) return 10;
+        if (String(m.name || '').toLowerCase().startsWith(qClean)) return 20;
+        if (code.includes(qClean)) return 30;
+        return 100;
+      };
+
+      members.sort((a, b) => {
+        const diff = getRelevance(a) - getRelevance(b);
+        if (diff !== 0) return diff;
+        return (a.softwareId || 0) - (b.softwareId || 0);
+      });
+    }
 
     res.json({ success: true, total, count: members.length, members });
   } catch (error) {
