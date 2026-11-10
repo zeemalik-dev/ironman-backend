@@ -17,8 +17,8 @@ export const getPayments = async (req, res) => {
       date,
       month,
       year,
-      limit = 50,
-      page = 1,
+      limit,
+      page,
     } = req.query;
     const filter = { gymId };
 
@@ -97,9 +97,13 @@ export const getPayments = async (req, res) => {
       }
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const hasLimit = limit !== undefined && limit !== null && limit !== 'all' && limit !== 'unlimited' && Number(limit) > 0;
+    const limitNum = hasLimit ? Number(limit) : 0;
+    const pageNum = Number(page) || 1;
+    const skip = hasLimit ? (pageNum - 1) * limitNum : 0;
+
     const [rawPayments, total, totalSum] = await Promise.all([
-      Payment.find(filter).sort({ paidOn: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Payment.find(filter).sort({ paidOn: -1 }).skip(skip).limit(limitNum).lean(),
       Payment.countDocuments(filter),
       Payment.aggregate([
         { $match: filter },
@@ -142,7 +146,21 @@ export const getPayments = async (req, res) => {
 export const recordPayment = async (req, res) => {
   try {
     const gymId = req.gymId;
-    const { memberId, amount, method = 'cash', paymentType = 'due_clearance', plan, notes } = req.body;
+    const {
+      memberId,
+      amount,
+      method = 'cash',
+      paymentType = 'due_clearance',
+      plan,
+      notes,
+      paidOn,
+      expiryDate,
+      discountType,
+      discountValue,
+      discountAmount,
+      originalFee,
+      finalFee,
+    } = req.body;
 
     if (!memberId || amount === undefined || Number(amount) <= 0) {
       return res.status(400).json({ success: false, message: 'Valid memberId and positive amount are required' });
@@ -221,12 +239,12 @@ export const recordPayment = async (req, res) => {
 
       // 2. Determine base date for renewal:
       // If current membership is still active, extend from current expiryDate.
-      // If membership has already expired, calculate from today's date.
-      const now = new Date();
+      // If membership has already expired, calculate from today's date (or passed paidOn).
+      const now = paidOn ? new Date(paidOn) : new Date();
       const currentExpiry = member.expiryDate ? new Date(member.expiryDate) : null;
       const isStillActive = currentExpiry && !isNaN(currentExpiry.getTime()) && currentExpiry.getTime() > now.getTime();
       const baseDate = isStillActive ? currentExpiry : now;
-      newExpiry = new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+      newExpiry = expiryDate ? new Date(expiryDate) : new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
 
       // 3. Financial calculations for renewal
       const planPrice = Number(planRecord?.price) || 0;
@@ -263,6 +281,16 @@ export const recordPayment = async (req, res) => {
       }
     }
 
+    if (discountType) member.discountType = discountType;
+    if (discountValue !== undefined) member.discountValue = Number(discountValue);
+    if (discountAmount !== undefined) member.discountAmount = Number(discountAmount);
+    if (originalFee !== undefined) member.originalFee = Number(originalFee);
+    if (finalFee !== undefined) member.finalFee = Number(finalFee);
+
+    if (!member.phone) {
+      member.phone = '03000000000';
+    }
+
     await member.save();
 
     const invoiceNo = `INV-${Date.now().toString().slice(-6)}`;
@@ -285,13 +313,17 @@ export const recordPayment = async (req, res) => {
       plan: plan || member.plan,
       invoiceNo,
       receivedBy: req.user?.name || 'Admin',
-      paidOn: new Date(),
+      paidOn: paidOn ? new Date(paidOn) : new Date(),
+      expiryDate: newExpiry || member.expiryDate,
       notes: paymentNotes,
       planFee: paymentType === 'renewal' ? Math.max(0, renewalFee - recTrainerFee) : paidNum,
       trainerFee: recTrainerFee,
       trainerName: (paymentType === 'renewal' && member.withTrainer) ? (member.trainerName || '') : '',
-      originalFee: paymentType === 'renewal' ? renewalFee : paidNum,
-      finalFee: paymentType === 'renewal' ? renewalFee : paidNum,
+      discountType: discountType || 'none',
+      discountValue: discountValue ? Number(discountValue) : 0,
+      discountAmount: discountAmount ? Number(discountAmount) : 0,
+      originalFee: originalFee ? Number(originalFee) : (paymentType === 'renewal' ? renewalFee : paidNum),
+      finalFee: finalFee ? Number(finalFee) : (paymentType === 'renewal' ? renewalFee : paidNum),
       dueRemaining: member.dueAmount,
     });
 
@@ -345,16 +377,33 @@ export const getPaymentInvoice = async (req, res) => {
       ],
     };
 
-    const payment = await Payment.findOne(query);
+    let payment = await Payment.findOne(query);
+    if (!payment) {
+      // Fallback: If idOrInvoiceNo is a Member ID or Member._id, fetch their latest payment invoice
+      const memberQuery = isObjectId
+        ? { gymId, $or: [{ _id: idOrInvoiceNo }, { memberId: idOrInvoiceNo }] }
+        : { gymId, memberId: idOrInvoiceNo };
+      const matchedMember = await Member.findOne(memberQuery);
+      if (matchedMember) {
+        payment = await Payment.findOne({ gymId, memberId: matchedMember.memberId }).sort({ paidOn: -1 });
+      }
+    }
     if (!payment) {
       return res.status(404).json({ success: false, message: `Invoice "${idOrInvoiceNo}" not found` });
     }
 
-    const [gym, member, plan] = await Promise.all([
+    let [gym, member] = await Promise.all([
       Gym.findById(payment.gymId).lean(),
       Member.findOne({ gymId: payment.gymId, memberId: payment.memberId }).lean(),
-      Plan.findOne({ gymId: payment.gymId, planType: payment.plan }).lean(),
     ]);
+
+    let plan = await Plan.findOne({ gymId: payment.gymId, name: payment.plan }).lean();
+    if (!plan && payment.plan) {
+      plan = await Plan.findOne({ gymId: payment.gymId, price: payment.amount, planType: payment.plan }).lean();
+    }
+    if (!plan && payment.plan) {
+      plan = await Plan.findOne({ gymId: payment.gymId, planType: payment.plan }).lean();
+    }
 
     const isDueClearance = payment.paymentType === 'due_clearance';
     const isAdmission = payment.paymentType === 'membership';
@@ -376,8 +425,8 @@ export const getPaymentInvoice = async (req, res) => {
     } else if (isAdmission && member?.withTrainer && Number(member?.trainerFee) > 0) {
       trainerFee = Number(member.trainerFee);
       trainerName = member.trainerName || '';
-    } else if (isRenewal && Number(payment.originalFee) > standardPlanPrice) {
-      // If renewal fee was higher than plan price, the difference was the trainer fee
+    } else if (isRenewal && member?.withTrainer && Number(payment.originalFee) > standardPlanPrice) {
+      // If renewal fee was higher than plan price and member has a personal trainer
       trainerFee = Number(payment.originalFee) - standardPlanPrice;
       trainerName = member?.trainerName || '';
     }
@@ -496,7 +545,7 @@ export const getPaymentInvoice = async (req, res) => {
           startDate: member?.startDate || null,
           expiryDate: member?.expiryDate || null,
           status: member?.status || 'active',
-          admissionFee: Number(member?.admissionFee !== undefined ? member.admissionFee : admissionFee),
+          admissionFee: isAdmission ? Number(member?.admissionFee !== undefined ? member.admissionFee : admissionFee) : 0,
           withTrainer: hasTrainer,
           trainerName,
           trainerFee,

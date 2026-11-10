@@ -140,7 +140,7 @@ export const getCashClosing = async (req, res) => {
       success: true,
       data: {
         dateStr: targetDateStr,
-        isToday: targetDateStr === todayStr,
+        isToday: targetDateStr === localTodayStr,
         isClosed: Boolean(existingClosing),
         closingRecord: existingClosing || null,
         financials: {

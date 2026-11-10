@@ -352,9 +352,11 @@ export const getIncomeExpenseReport = async (req, res) => {
       ? new mongoose.Types.ObjectId(gymId)
       : gymId;
 
-    const { preset, period, startDate: customStart, endDate: customEnd, date, month, year, limit = 50 } = req.query;
+    const { preset, period, startDate: customStart, endDate: customEnd, date, month, year, limit } = req.query;
     const { startDate, endDate } = resolveDateRange(period || preset, customStart, customEnd, { date, month, year });
     const diffDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+    const hasLimit = limit !== undefined && limit !== null && limit !== 'all' && limit !== 'unlimited' && Number(limit) > 0;
+    const limitNum = hasLimit ? Number(limit) : 0;
 
     const [
       incomeAgg,
@@ -389,11 +391,11 @@ export const getIncomeExpenseReport = async (req, res) => {
 
       Payment.find({ gymId, paidOn: { $gte: startDate, $lte: endDate } })
         .sort({ paidOn: -1 })
-        .limit(Number(limit)),
+        .limit(limitNum),
 
       Expense.find({ gymId, spentOn: { $gte: startDate, $lte: endDate } })
         .sort({ spentOn: -1 })
-        .limit(Number(limit)),
+        .limit(limitNum),
 
       Promise.all([
         Payment.aggregate([
@@ -477,8 +479,10 @@ export const getMembersReport = async (req, res) => {
       ? new mongoose.Types.ObjectId(gymId)
       : gymId;
 
-    const { preset, period, startDate: customStart, endDate: customEnd, date, month, year, limit = 100 } = req.query;
+    const { preset, period, startDate: customStart, endDate: customEnd, date, month, year, limit } = req.query;
     const { startDate, endDate } = resolveDateRange(period || preset, customStart, customEnd, { date, month, year });
+    const hasLimit = limit !== undefined && limit !== null && limit !== 'all' && limit !== 'unlimited' && Number(limit) > 0;
+    const limitNum = hasLimit ? Number(limit) : 0;
 
     const [
       totalMembers,
@@ -506,7 +510,7 @@ export const getMembersReport = async (req, res) => {
       ]),
       Member.find({ gymId })
         .sort({ createdAt: -1 })
-        .limit(Number(limit))
+        .limit(limitNum)
         .select('memberId name phone cnic plan status startDate expiryDate totalAmount paidAmount dueAmount photoUrl'),
       Member.aggregate([
         { $match: { gymId: gymObjectId, createdAt: { $gte: startDate, $lte: endDate } } },
@@ -575,8 +579,10 @@ export const getDuesReport = async (req, res) => {
       ? new mongoose.Types.ObjectId(gymId)
       : gymId;
 
-    const { preset, startDate: customStart, endDate: customEnd, limit = 100 } = req.query;
+    const { preset, startDate: customStart, endDate: customEnd, limit } = req.query;
     const { startDate, endDate } = resolveDateRange(preset, customStart, customEnd);
+    const hasLimit = limit !== undefined && limit !== null && limit !== 'all' && limit !== 'unlimited' && Number(limit) > 0;
+    const limitNum = hasLimit ? Number(limit) : 0;
 
     const [
       totalDuesAgg,
@@ -621,7 +627,7 @@ export const getDuesReport = async (req, res) => {
 
       Member.find({ gymId, dueAmount: { $gt: 0 } })
         .sort({ dueAmount: -1 })
-        .limit(Number(limit))
+        .limit(limitNum)
         .select('memberId name phone plan totalAmount paidAmount dueAmount expiryDate status notes'),
     ]);
 
@@ -668,8 +674,10 @@ export const getAttendanceReport = async (req, res) => {
       ? new mongoose.Types.ObjectId(gymId)
       : gymId;
 
-    const { preset, startDate: customStart, endDate: customEnd, limit = 60 } = req.query;
+    const { preset, startDate: customStart, endDate: customEnd, limit } = req.query;
     const { startDate, endDate } = resolveDateRange(preset, customStart, customEnd);
+    const hasLimit = limit !== undefined && limit !== null && limit !== 'all' && limit !== 'unlimited' && Number(limit) > 0;
+    const limitNum = hasLimit ? Number(limit) : 0;
 
     const [
       totalCheckIns,
@@ -703,7 +711,7 @@ export const getAttendanceReport = async (req, res) => {
           },
         },
         { $sort: { _id: -1 } },
-        { $limit: Number(limit) },
+        ...(limitNum > 0 ? [{ $limit: limitNum }] : []),
       ]),
 
       Attendance.aggregate([
