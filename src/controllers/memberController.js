@@ -49,10 +49,12 @@ export const getMembers = async (req, res) => {
     if (plan && plan !== 'all') {
       filter.plan = plan;
     }
-    if (q) {
-      const qClean = String(q).trim();
-      const isNumeric = /^\d+$/.test(qClean);
-      const qNum = isNumeric ? parseInt(qClean, 10) : NaN;
+
+    const qClean = q ? String(q).trim() : '';
+    const isNumeric = /^\d+$/.test(qClean);
+    const qNum = isNumeric ? parseInt(qClean, 10) : NaN;
+
+    if (qClean) {
       // Phone/CNIC search should only trigger if input is 6+ digits or starts with phone indicators
       const isPhoneLike =
         !isNaN(qNum) &&
@@ -153,9 +155,9 @@ export const getMembers = async (req, res) => {
     }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const fetchLimit = q ? Math.max(100, Number(limit)) : Number(limit);
+    const fetchLimit = qClean ? Math.max(100, Number(limit)) : Number(limit);
     const mongoSort =
-      q && isNumeric && searchBy === 'id'
+      qClean && isNumeric && searchBy === 'id'
         ? { softwareId: 1 }
         : { softwareId: -1, createdAt: -1 };
 
@@ -165,10 +167,8 @@ export const getMembers = async (req, res) => {
     ]);
 
     // Apply intelligent search relevance sorting if query is present
-    if (q) {
-      const qClean = String(q).trim().toLowerCase();
-      const isNum = /^\d+$/.test(qClean);
-      const qN = isNum ? parseInt(qClean, 10) : NaN;
+    if (qClean) {
+      const qLower = qClean.toLowerCase();
 
       const getRelevance = (m) => {
         const sw = m.softwareId !== undefined && m.softwareId !== null ? Number(m.softwareId) : NaN;
@@ -180,22 +180,22 @@ export const getMembers = async (req, res) => {
         const phone = String(m.phone || m.mobile || '');
 
         if (searchBy === 'name') {
-          if (name === qClean) return 10;
-          if (name.startsWith(qClean)) return 20;
-          if (name.includes(qClean)) return 30;
+          if (name === qLower) return 10;
+          if (name.startsWith(qLower)) return 20;
+          if (name.includes(qLower)) return 30;
           return 100;
         }
 
         if (searchBy === 'phone') {
-          if (phone === qClean) return 10;
-          if (phone.startsWith(qClean)) return 20;
-          if (phone.includes(qClean)) return 30;
+          if (phone === qLower) return 10;
+          if (phone.startsWith(qLower)) return 20;
+          if (phone.includes(qLower)) return 30;
           return 100;
         }
 
         // searchBy === 'id' or default
-        if (isNum) {
-          if (sw === qN || numId === qN) return 10;
+        if (isNumeric) {
+          if (sw === qNum || numId === qNum) return 10;
           const rep = qClean[0];
           if (trailing && new RegExp('^' + rep + '+$').test(trailing)) return 20 + trailing.length;
           if (!isNaN(sw) && new RegExp('^' + rep + '+$').test(String(sw))) return 20 + String(sw).length;
@@ -204,9 +204,9 @@ export const getMembers = async (req, res) => {
           if (code.includes(qClean)) return 100 + (numId || 0);
           return 200;
         }
-        if (code === qClean || name === qClean) return 10;
-        if (name.startsWith(qClean)) return 20;
-        if (code.includes(qClean)) return 30;
+        if (code === qLower || name === qLower) return 10;
+        if (name.startsWith(qLower)) return 20;
+        if (code.includes(qLower)) return 30;
         return 100;
       };
 
