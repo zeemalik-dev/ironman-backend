@@ -83,20 +83,30 @@ export const getMembers = async (req, res) => {
       const conditions = [];
 
       if (searchBy === 'id') {
-        conditions.push(
-          { memberId: { $regex: qClean, $options: 'i' } },
-          { memberCode: { $regex: qClean, $options: 'i' } },
-          { machineUserId: { $regex: qClean, $options: 'i' } }
-        );
-        if (targetIds.length > 0) {
-          conditions.push({ softwareId: { $in: targetIds } });
-        }
-        if (paddedVariants.length > 0) {
-          const uniqueVariants = Array.from(new Set(paddedVariants));
-          for (const v of uniqueVariants) {
-            conditions.push({ memberCode: { $regex: v + '$' } });
-            conditions.push({ memberId: { $regex: v + '$' } });
+        if (isNumeric) {
+          // 1. Prefix ranges and repetition targets for numerical softwareId
+          const ranges = [];
+          for (let l = qClean.length; l <= 6; l++) {
+            const min = parseInt(qClean.padEnd(l, '0'), 10);
+            const max = parseInt(qClean.padEnd(l, '9'), 10);
+            ranges.push({ softwareId: { $gte: min, $lte: max } });
           }
+          if (targetIds.length > 0) {
+            ranges.push({ softwareId: { $in: targetIds } });
+          }
+          conditions.push(...ranges);
+
+          // 2. Anchored regex for memberCode, memberId, and machineUserId
+          const idRegex = new RegExp('(?:^|[^0-9])0*' + qClean + '[0-9]*$', 'i');
+          conditions.push({ memberCode: idRegex });
+          conditions.push({ memberId: idRegex });
+          conditions.push({ machineUserId: new RegExp('^0*' + qClean + '[0-9]*$') });
+        } else {
+          conditions.push(
+            { memberId: { $regex: qClean, $options: 'i' } },
+            { memberCode: { $regex: qClean, $options: 'i' } },
+            { machineUserId: { $regex: qClean, $options: 'i' } }
+          );
         }
       } else if (searchBy === 'name') {
         conditions.push({ name: { $regex: qClean, $options: 'i' } });
@@ -108,21 +118,29 @@ export const getMembers = async (req, res) => {
         );
       } else {
         // 'all' or fallback
-        conditions.push(
-          { name: { $regex: qClean, $options: 'i' } },
-          { memberId: { $regex: qClean, $options: 'i' } },
-          { memberCode: { $regex: qClean, $options: 'i' } },
-          { machineUserId: { $regex: qClean, $options: 'i' } }
-        );
-        if (targetIds.length > 0) {
-          conditions.push({ softwareId: { $in: targetIds } });
-        }
-        if (paddedVariants.length > 0) {
-          const uniqueVariants = Array.from(new Set(paddedVariants));
-          for (const v of uniqueVariants) {
-            conditions.push({ memberCode: { $regex: v + '$' } });
-            conditions.push({ memberId: { $regex: v + '$' } });
+        if (isNumeric) {
+          const ranges = [];
+          for (let l = qClean.length; l <= 6; l++) {
+            const min = parseInt(qClean.padEnd(l, '0'), 10);
+            const max = parseInt(qClean.padEnd(l, '9'), 10);
+            ranges.push({ softwareId: { $gte: min, $lte: max } });
           }
+          if (targetIds.length > 0) {
+            ranges.push({ softwareId: { $in: targetIds } });
+          }
+          conditions.push(...ranges);
+
+          const idRegex = new RegExp('(?:^|[^0-9])0*' + qClean + '[0-9]*$', 'i');
+          conditions.push({ memberCode: idRegex });
+          conditions.push({ memberId: idRegex });
+          conditions.push({ name: { $regex: qClean, $options: 'i' } });
+        } else {
+          conditions.push(
+            { name: { $regex: qClean, $options: 'i' } },
+            { memberId: { $regex: qClean, $options: 'i' } },
+            { memberCode: { $regex: qClean, $options: 'i' } },
+            { machineUserId: { $regex: qClean, $options: 'i' } }
+          );
         }
         if (isPhoneLike) {
           conditions.push({ phone: { $regex: qClean, $options: 'i' } });
@@ -135,8 +153,14 @@ export const getMembers = async (req, res) => {
     }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [members, total] = await Promise.all([
-      Member.find(filter).sort({ softwareId: -1, createdAt: -1 }).skip(skip).limit(Number(limit)),
+    const fetchLimit = q ? Math.max(100, Number(limit)) : Number(limit);
+    const mongoSort =
+      q && isNumeric && searchBy === 'id'
+        ? { softwareId: 1 }
+        : { softwareId: -1, createdAt: -1 };
+
+    let [members, total] = await Promise.all([
+      Member.find(filter).sort(mongoSort).skip(skip).limit(fetchLimit),
       Member.countDocuments(filter),
     ]);
 
@@ -191,6 +215,7 @@ export const getMembers = async (req, res) => {
         if (diff !== 0) return diff;
         return (a.softwareId || 0) - (b.softwareId || 0);
       });
+      members = members.slice(0, Number(limit));
     }
 
     res.json({ success: true, total, count: members.length, members });
