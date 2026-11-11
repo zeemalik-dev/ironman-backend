@@ -385,7 +385,14 @@ export const getPaymentInvoice = async (req, res) => {
         : { gymId, memberId: idOrInvoiceNo };
       const matchedMember = await Member.findOne(memberQuery);
       if (matchedMember) {
-        payment = await Payment.findOne({ gymId, memberId: matchedMember.memberId }).sort({ paidOn: -1 });
+        payment = await Payment.findOne({
+          gymId,
+          $or: [
+            { memberId: matchedMember.memberId },
+            { memberId: String(matchedMember._id) },
+            { member: matchedMember._id },
+          ],
+        }).sort({ paidOn: -1 });
       }
     }
     if (!payment) {
@@ -394,7 +401,14 @@ export const getPaymentInvoice = async (req, res) => {
 
     let [gym, member] = await Promise.all([
       Gym.findById(payment.gymId).lean(),
-      Member.findOne({ gymId: payment.gymId, memberId: payment.memberId }).lean(),
+      Member.findOne({
+        gymId: payment.gymId,
+        $or: [
+          { memberId: payment.memberId },
+          ...(mongoose.Types.ObjectId.isValid(payment.memberId) ? [{ _id: payment.memberId }] : []),
+          ...(payment.member ? [{ _id: payment.member }] : []),
+        ],
+      }).lean(),
     ]);
 
     let plan = await Plan.findOne({ gymId: payment.gymId, name: payment.plan }).lean();
@@ -408,6 +422,7 @@ export const getPaymentInvoice = async (req, res) => {
     const isDueClearance = payment.paymentType === 'due_clearance';
     const isAdmission = payment.paymentType === 'membership';
     const isRenewal = payment.paymentType === 'renewal';
+    const isPtFee = payment.paymentType === 'pt_fee';
 
     // Standard plan price from Plan collection (default to 5000 if monthly)
     const standardPlanPrice = Number(plan?.price) || (payment.plan === 'monthly' ? 5000 : 5000);
@@ -416,7 +431,10 @@ export const getPaymentInvoice = async (req, res) => {
     let trainerFee = 0;
     let trainerName = '';
 
-    if (isDueClearance) {
+    if (isPtFee) {
+      trainerFee = Number(payment.trainerFee || payment.originalFee || payment.finalFee || payment.amount || 0);
+      trainerName = payment.trainerName || member?.trainerName || 'Coach';
+    } else if (isDueClearance) {
       trainerFee = 0;
       trainerName = '';
     } else if (payment.trainerFee !== undefined && payment.trainerFee > 0) {
@@ -432,22 +450,26 @@ export const getPaymentInvoice = async (req, res) => {
     }
 
     // 2. Standalone Membership Plan Fee & Admission Fee resolution
-    let admissionFee = payment.admissionFee !== undefined && Number(payment.admissionFee) > 0
-      ? Number(payment.admissionFee)
-      : (isAdmission ? Number(member?.admissionFee || 0) : 0);
+    let admissionFee = isPtFee
+      ? 0
+      : (payment.admissionFee !== undefined && Number(payment.admissionFee) > 0
+          ? Number(payment.admissionFee)
+          : (isAdmission ? Number(member?.admissionFee || 0) : 0));
 
-    if (admissionFee === 0 && payment.notes) {
+    if (!isPtFee && admissionFee === 0 && payment.notes) {
       const match = payment.notes.match(/(?:Admission Fee|admissionFee)[:\s]+(?:PKR\s*)?(\d+)/i);
       if (match && match[1]) {
         admissionFee = Number(match[1]) || 0;
       }
     }
 
-    let rawPlanFee = payment.planFee !== undefined && Number(payment.planFee) > 0
-      ? Number(payment.planFee)
-      : (isDueClearance ? Number(payment.amount || 0) : standardPlanPrice);
+    let rawPlanFee = isPtFee
+      ? 0
+      : (payment.planFee !== undefined && Number(payment.planFee) > 0
+          ? Number(payment.planFee)
+          : (isDueClearance ? Number(payment.amount || 0) : standardPlanPrice));
 
-    if (isAdmission && admissionFee === 0) {
+    if (!isPtFee && isAdmission && admissionFee === 0) {
       // If payment combined admission fee into planFee (e.g. 10000 total for 5000 plan)
       if (rawPlanFee > standardPlanPrice) {
         admissionFee = rawPlanFee - standardPlanPrice;
@@ -459,15 +481,17 @@ export const getPaymentInvoice = async (req, res) => {
           rawPlanFee = Math.max(0, Number(payment.amount || 0) - 5000 - trainerFee);
         }
       }
-    } else if (admissionFee > 0 && rawPlanFee > admissionFee && (rawPlanFee + admissionFee > Number(payment.amount || 0) + Number(payment.dueRemaining || 0))) {
+    } else if (!isPtFee && admissionFee > 0 && rawPlanFee > admissionFee && (rawPlanFee + admissionFee > Number(payment.amount || 0) + Number(payment.dueRemaining || 0))) {
       // If rawPlanFee already had admission fee inside it
       rawPlanFee = rawPlanFee - admissionFee;
     }
 
-    const planFee = isDueClearance ? Number(payment.amount || 0) : rawPlanFee;
+    const planFee = isPtFee ? 0 : (isDueClearance ? Number(payment.amount || 0) : rawPlanFee);
 
     // 4. Gross total for THIS transaction before discount
-    const grossTotal = isDueClearance
+    const grossTotal = isPtFee
+      ? trainerFee
+      : isDueClearance
       ? planFee
       : (planFee + trainerFee + admissionFee);
 
@@ -492,7 +516,9 @@ export const getPaymentInvoice = async (req, res) => {
     }
 
     // 6. Total package payable for THIS transaction
-    const totalPackageFee = isDueClearance
+    const totalPackageFee = isPtFee
+      ? (payment.finalFee !== undefined ? Number(payment.finalFee) : Math.max(0, trainerFee - discountAmount))
+      : isDueClearance
       ? planFee
       : Math.max(0, grossTotal - discountAmount);
 
@@ -500,7 +526,9 @@ export const getPaymentInvoice = async (req, res) => {
     const amountReceived = Number(payment.amount || 0);
 
     // 8. Remaining dues for member
-    const remainingDues = member ? Number(member.dueAmount || 0) : Math.max(0, totalPackageFee - amountReceived);
+    const remainingDues = payment.dueRemaining !== undefined
+      ? Number(payment.dueRemaining)
+      : (member ? Number(member.dueAmount || 0) : Math.max(0, totalPackageFee - amountReceived));
 
     const isFullPayment = remainingDues === 0;
     const paymentStatus = isFullPayment ? 'PAID IN FULL' : 'PARTIAL PAYMENT';

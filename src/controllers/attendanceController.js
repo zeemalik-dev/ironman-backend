@@ -96,8 +96,27 @@ export const checkIn = async (req, res) => {
     const timezone = gym?.timezone || 'Asia/Karachi';
     const cutoffHour = gym?.settings?.checkInCutoffHour ?? 0;
     const cutoffMinute = gym?.settings?.checkInCutoffMinute ?? 0;
+    const gracePeriodDays = Math.max(0, Number(gym?.settings?.gracePeriodDays ?? 0));
     const punchDate = timestamp ? new Date(timestamp) : new Date();
     const todayStr = getGymDateString(punchDate, timezone, cutoffHour, cutoffMinute);
+
+    // Dynamically sync member status on check-in if not frozen
+    const graceCutoff = new Date(punchDate.getTime() - gracePeriodDays * 24 * 60 * 60 * 1000);
+    const memberExpiry = member.expiryDate ? new Date(member.expiryDate) : null;
+
+    if (memberExpiry && member.status !== 'frozen') {
+      if (memberExpiry < graceCutoff) {
+        if (member.status !== 'expired') {
+          member.status = 'expired';
+          await member.save();
+        }
+      } else if (memberExpiry < punchDate) {
+        if (member.status !== 'due') {
+          member.status = 'due';
+          await member.save();
+        }
+      }
+    }
 
     // Check if member already checked in today
     const recentCheckIn = await Attendance.findOne({
@@ -152,8 +171,10 @@ export const checkIn = async (req, res) => {
       warning:
         member.status === 'expired'
           ? 'Membership Expired!'
+          : (memberExpiry && memberExpiry < punchDate && memberExpiry >= graceCutoff)
+          ? 'In Grace Period (Fee Due)'
           : member.status === 'due'
-          ? `Pending Dues: PKR ${member.dueAmount}`
+          ? (Number(member.dueAmount) > 0 ? `Pending Dues: PKR ${member.dueAmount}` : 'Fee Due')
           : member.status === 'frozen'
           ? 'Membership is currently frozen.'
           : null,

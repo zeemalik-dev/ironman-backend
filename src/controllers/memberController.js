@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { Gym } from '../models/Gym.js';
 import { Member } from '../models/Member.js';
 import { Payment } from '../models/Payment.js';
 import { Plan } from '../models/Plan.js';
@@ -13,22 +14,50 @@ export const getMembers = async (req, res) => {
 
     const now = new Date();
 
-    // Auto-sync status for members whose expiryDate has passed (and not frozen)
+    // 1. Fetch gym settings to get gracePeriodDays
+    const gym = await Gym.findById(gymId).select('settings');
+    const gracePeriodDays = Math.max(0, Number(gym?.settings?.gracePeriodDays ?? 0));
+    const graceCutoff = new Date(now.getTime() - gracePeriodDays * 24 * 60 * 60 * 1000);
+
+    // 2. Members whose grace period has ended (now > expiryDate + gracePeriodDays, i.e., expiryDate < graceCutoff)
+    // and are not frozen: set to 'expired'
     await Member.updateMany(
       {
         gymId,
-        expiryDate: { $lt: now },
+        expiryDate: { $lt: graceCutoff },
         status: { $nin: ['expired', 'frozen'] },
       },
       { $set: { status: 'expired' } }
     );
 
-    // Ensure legacy members with undefined status and future expiryDate are set to active (or due if pending dues)
+    // 3. Members who expired (expiryDate < now) but are still within their grace period (expiryDate >= graceCutoff)
+    // and not frozen: set to 'due' (grace period active, fee due)
+    if (gracePeriodDays > 0) {
+      await Member.updateMany(
+        {
+          gymId,
+          expiryDate: { $lt: now, $gte: graceCutoff },
+          status: { $ne: 'frozen' },
+        },
+        { $set: { status: 'due' } }
+      );
+    } else {
+      await Member.updateMany(
+        {
+          gymId,
+          expiryDate: { $lt: now },
+          status: { $nin: ['expired', 'frozen'] },
+        },
+        { $set: { status: 'expired' } }
+      );
+    }
+
+    // 4. Ensure members with future expiryDate (not frozen) have accurate active / due status
     await Member.updateMany(
       {
         gymId,
         expiryDate: { $gte: now },
-        $or: [{ status: { $exists: false } }, { status: null }, { status: '' }],
+        status: { $ne: 'frozen' },
         dueAmount: { $gt: 0 },
       },
       { $set: { status: 'due' } }
@@ -37,7 +66,8 @@ export const getMembers = async (req, res) => {
       {
         gymId,
         expiryDate: { $gte: now },
-        $or: [{ status: { $exists: false } }, { status: null }, { status: '' }],
+        status: { $in: ['expired', '', null] },
+        dueAmount: { $lte: 0 },
       },
       { $set: { status: 'active' } }
     );
@@ -72,14 +102,25 @@ export const getMembers = async (req, res) => {
 
 export const getMemberById = async (req, res) => {
   try {
-    const member = await Member.findOne({ _id: req.params.id, gymId: req.gymId });
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const member = await Member.findOne({
+      gymId: req.gymId,
+      $or: [
+        ...(isObjectId ? [{ _id: req.params.id }] : []),
+        { memberId: req.params.id },
+      ],
+    });
     if (!member) {
       return res.status(404).json({ success: false, message: 'Member not found' });
     }
     const [payments, attendance] = await Promise.all([
       Payment.find({
         gymId: req.gymId,
-        $or: [{ memberId: member.memberId }, { memberId: String(member._id) }],
+        $or: [
+          { memberId: member.memberId },
+          { memberId: String(member._id) },
+          { member: member._id },
+        ],
       }).sort({ paidOn: -1 }),
       Attendance.find({
         gymId: req.gymId,
@@ -266,31 +307,72 @@ export const createMember = async (req, res) => {
     const expiryDays = Math.max(1, authoritativePlan?.durationDays || Number(durationDays) || 30);
     const expiryDate = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000);
 
-    // Auto generate memberId if not given
+    // Auto generate memberId, softwareId, memberCode if not given
     let memberId = req.body.memberId;
-    if (!memberId) {
-      const existingMembers = await Member.find({ gymId }, { memberId: 1 }).lean();
+    let softwareId = req.body.softwareId ? Number(req.body.softwareId) : null;
+    let memberCode = req.body.memberCode || '';
+    let machineUserId = req.body.machineUserId || '';
+    let biometricUid = req.body.biometricUid !== undefined ? req.body.biometricUid : null;
+
+    if (!memberId || !softwareId || !memberCode) {
+      const existingMembers = await Member.find({ gymId }, { memberId: 1, softwareId: 1 }).lean();
       let maxNum = 1000;
+      let detectedPrefix = 'AGL-';
+      let paddingLen = 6;
+
       for (const m of existingMembers) {
-        if (!m.memberId) continue;
-        const match = String(m.memberId).match(/\d+/);
-        if (match) {
-          const num = parseInt(match[0], 10);
-          if (!isNaN(num) && num > maxNum) {
-            maxNum = num;
+        if (m.softwareId && !isNaN(Number(m.softwareId)) && Number(m.softwareId) > maxNum) {
+          maxNum = Number(m.softwareId);
+        }
+        if (m.memberId) {
+          const match = String(m.memberId).match(/^([A-Za-z]+-?)(\d+)$/);
+          if (match) {
+            detectedPrefix = match[1];
+            paddingLen = match[2].length;
+            const num = parseInt(match[2], 10);
+            if (!isNaN(num) && num > maxNum) {
+              maxNum = num;
+            }
+          } else {
+            const numMatch = String(m.memberId).match(/\d+/);
+            if (numMatch) {
+              const num = parseInt(numMatch[0], 10);
+              if (!isNaN(num) && num > maxNum) {
+                maxNum = num;
+              }
+            }
           }
         }
       }
+
       let candidateSeq = maxNum + 1;
-      while (await Member.exists({ gymId, memberId: `M-${candidateSeq}` })) {
+      while (
+        await Member.exists({
+          gymId,
+          $or: [
+            { memberId: `${detectedPrefix}${String(candidateSeq).padStart(paddingLen, '0')}` },
+            { softwareId: candidateSeq },
+          ],
+        })
+      ) {
         candidateSeq++;
       }
-      memberId = `M-${candidateSeq}`;
+
+      const generatedCode = `${detectedPrefix}${String(candidateSeq).padStart(paddingLen, '0')}`;
+      if (!memberId) memberId = generatedCode;
+      if (!memberCode) memberCode = generatedCode;
+      if (!softwareId) softwareId = candidateSeq;
+      if (!machineUserId) machineUserId = String(candidateSeq);
+      if (biometricUid === null) biometricUid = candidateSeq;
     }
 
     const member = await Member.create({
       gymId,
       memberId,
+      softwareId,
+      memberCode,
+      machineUserId,
+      biometricUid,
       name,
       phone,
       cnic,
@@ -688,9 +770,13 @@ export const unfreezeMember = async (req, res) => {
     }
 
     // Determine restored status
-    if (new Date(member.expiryDate) < now) {
+    const gym = await Gym.findById(gymId).select('settings');
+    const gracePeriodDays = Math.max(0, Number(gym?.settings?.gracePeriodDays ?? 0));
+    const graceCutoff = new Date(now.getTime() - gracePeriodDays * 24 * 60 * 60 * 1000);
+
+    if (new Date(member.expiryDate) < graceCutoff) {
       member.status = 'expired';
-    } else if (Number(member.dueAmount) > 0) {
+    } else if (new Date(member.expiryDate) < now || Number(member.dueAmount) > 0) {
       member.status = 'due';
     } else {
       member.status = 'active';
@@ -714,7 +800,16 @@ export const bookTrainer = async (req, res) => {
   try {
     const gymId = req.gymId;
     const { id } = req.params;
-    const { trainerId, paidAmount = 0, paymentMethod = 'cash', paymentMode = 'full', notes = '' } = req.body;
+    const {
+      trainerId,
+      paidAmount = 0,
+      paymentMethod = 'cash',
+      paymentMode = 'full',
+      discountType = 'none',
+      discountValue = 0,
+      discountAmount = 0,
+      notes = '',
+    } = req.body;
 
     if (!trainerId) {
       return res.status(400).json({ success: false, message: 'Please select a trainer to book' });
@@ -732,52 +827,81 @@ export const bookTrainer = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Trainer not found' });
     }
 
-    const trainerFee = Number(trainer.fee !== undefined ? trainer.fee : 3000);
+    const baseFee = Number(trainer.fee !== undefined ? trainer.fee : 3000);
+
+    // Calculate discount authoritatively
+    let calculatedDiscountAmount = 0;
+    let normDiscountType = 'none';
+    let finalDiscountValue = 0;
+
+    if (discountType === 'percentage') {
+      normDiscountType = 'percentage';
+      finalDiscountValue = Math.max(0, Math.min(100, Number(discountValue) || 0));
+      calculatedDiscountAmount = Math.round(((baseFee * finalDiscountValue) / 100) * 100) / 100;
+    } else if (discountType === 'fixed') {
+      normDiscountType = 'fixed';
+      finalDiscountValue = Math.max(0, Math.min(baseFee, Number(discountValue) || 0));
+      calculatedDiscountAmount = Math.round(finalDiscountValue * 100) / 100;
+    }
+
+    const finalFee = Math.max(0, Math.round((baseFee - calculatedDiscountAmount) * 100) / 100);
     const numPaid = Math.max(0, Number(paidAmount) || 0);
 
-    if (numPaid > trainerFee) {
+    if (numPaid > finalFee) {
       return res.status(400).json({
         success: false,
-        message: `Paid amount cannot exceed trainer fee (${trainerFee})`,
+        message: `Paid amount cannot exceed payable trainer fee (${finalFee})`,
       });
     }
+
+    if (paymentMode === 'full' && numPaid !== finalFee) {
+      return res.status(400).json({
+        success: false,
+        message: `In Full Payment mode, payment must equal the payable fee (PKR ${finalFee})`,
+      });
+    }
+
+    const dueAddition = Math.max(0, finalFee - numPaid);
 
     // Update member coaching fields
     member.withTrainer = true;
     member.trainerId = trainer._id;
     member.trainerName = trainer.name;
-    member.trainerFee = trainerFee;
+    member.trainerFee = finalFee;
 
     // Financial adjustment: add trainer fee to total amount and update paid/due amounts
-    member.totalAmount = (Number(member.totalAmount) || 0) + trainerFee;
+    member.totalAmount = (Number(member.totalAmount) || 0) + finalFee;
     member.paidAmount = (Number(member.paidAmount) || 0) + numPaid;
-    const dueAddition = Math.max(0, trainerFee - numPaid);
     member.dueAmount = (Number(member.dueAmount) || 0) + dueAddition;
+    if (dueAddition > 0) {
+      member.status = 'due';
+    }
 
     await member.save();
 
-    // Create payment transaction if money was collected now
-    let payment = null;
-    if (numPaid > 0) {
-      const now = new Date();
-      payment = await Payment.create({
-        gymId,
-        memberId: member.memberId,
-        memberName: member.name,
-        amount: numPaid,
-        method: paymentMethod || 'cash',
-        paymentType: 'pt_fee',
-        plan: member.plan,
-        invoiceNo: `INV-PT-${Date.now().toString().slice(-6)}`,
-        receivedBy: req.user?.name || 'Admin',
-        paidOn: now,
-        notes: notes || `Personal Trainer booking: Coach ${trainer.name} (+PKR ${trainerFee})`,
-        trainerFee: trainerFee,
-        trainerName: trainer.name,
-        finalFee: trainerFee,
-        dueRemaining: dueAddition,
-      });
-    }
+    // Always create payment/invoice record for PT booking (even if 0 advance / added to dues)
+    const now = new Date();
+    const payment = await Payment.create({
+      gymId,
+      memberId: member.memberId,
+      memberName: member.name,
+      amount: numPaid,
+      method: paymentMethod || 'cash',
+      paymentType: 'pt_fee',
+      plan: member.plan,
+      invoiceNo: `INV-PT-${Date.now().toString().slice(-6)}`,
+      receivedBy: req.user?.name || 'Admin',
+      paidOn: now,
+      notes: notes || `Personal Trainer booking: Coach ${trainer.name} [Fee: PKR ${baseFee}${calculatedDiscountAmount > 0 ? `, Discount: PKR ${calculatedDiscountAmount}` : ''}]`,
+      trainerFee: baseFee,
+      trainerName: trainer.name,
+      originalFee: baseFee,
+      discountType: normDiscountType,
+      discountValue: finalDiscountValue,
+      discountAmount: calculatedDiscountAmount,
+      finalFee: finalFee,
+      dueRemaining: dueAddition,
+    });
 
     res.json({
       success: true,
