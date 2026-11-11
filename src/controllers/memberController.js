@@ -131,7 +131,10 @@ export const getMemberById = async (req, res) => {
     const now = new Date();
     const expiry = new Date(member.expiryDate);
     const diffMs = expiry.getTime() - now.getTime();
-    const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    const daysRemaining =
+      diffMs < 0
+        ? Math.floor(diffMs / (1000 * 60 * 60 * 24))
+        : Math.ceil(diffMs / (1000 * 60 * 60 * 24));
     const isRenewEligible = daysRemaining <= 10;
     const daysFrozen = member.frozenAt
       ? Math.max(0, Math.ceil((now.getTime() - new Date(member.frozenAt).getTime()) / (1000 * 60 * 60 * 24)))

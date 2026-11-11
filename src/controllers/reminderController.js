@@ -72,17 +72,21 @@ export const getRemindersSummary = async (req, res) => {
       Member.countDocuments({
         gymId,
         expiryDate: { $lt: startOfToday },
+        status: { $nin: ['due', 'frozen'] },
       }),
       Member.countDocuments({
         gymId,
-        dueAmount: { $gt: 0 },
+        status: { $ne: 'frozen' },
+        $or: [{ dueAmount: { $gt: 0 } }, { status: 'due' }],
       }),
       Member.countDocuments({
         gymId,
+        status: { $ne: 'frozen' },
         $or: [
           { expiryDate: { $gte: startOfToday, $lte: windowEnd } },
           { expiryDate: { $lt: startOfToday } },
           { dueAmount: { $gt: 0 } },
+          { status: 'due' },
         ],
       }),
     ]);
@@ -152,14 +156,24 @@ export const getReminders = async (req, res) => {
       query.expiryDate = { $gte: startOfToday, $lte: windowEnd };
     } else if (type === 'expired') {
       query.expiryDate = { $lt: startOfToday };
+      if (!query.status) {
+        query.status = { $nin: ['due', 'frozen'] };
+      }
     } else if (type === 'due') {
-      query.dueAmount = { $gt: 0 };
+      const dueCondition = [{ dueAmount: { $gt: 0 } }, { status: 'due' }];
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: dueCondition }];
+        delete query.$or;
+      } else {
+        query.$or = dueCondition;
+      }
     } else {
       // 'all' reminder types: must match at least one reminder condition
       const reminderCondition = [
         { expiryDate: { $gte: startOfToday, $lte: windowEnd } },
         { expiryDate: { $lt: startOfToday } },
         { dueAmount: { $gt: 0 } },
+        { status: 'due' },
       ];
 
       if (query.$or) {
@@ -176,14 +190,16 @@ export const getReminders = async (req, res) => {
       Member.find(query).sort({ expiryDate: 1, dueAmount: -1 }).skip(skip).limit(Number(limit)),
       Member.countDocuments(query),
       Member.countDocuments({ gymId, expiryDate: { $gte: startOfToday, $lte: windowEnd } }),
-      Member.countDocuments({ gymId, expiryDate: { $lt: startOfToday } }),
-      Member.countDocuments({ gymId, dueAmount: { $gt: 0 } }),
+      Member.countDocuments({ gymId, expiryDate: { $lt: startOfToday }, status: { $nin: ['due', 'frozen'] } }),
+      Member.countDocuments({ gymId, status: { $ne: 'frozen' }, $or: [{ dueAmount: { $gt: 0 } }, { status: 'due' }] }),
       Member.countDocuments({
         gymId,
+        status: { $ne: 'frozen' },
         $or: [
           { expiryDate: { $gte: startOfToday, $lte: windowEnd } },
           { expiryDate: { $lt: startOfToday } },
           { dueAmount: { $gt: 0 } },
+          { status: 'due' },
         ],
       }),
     ]);
